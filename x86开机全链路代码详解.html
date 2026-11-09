@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>x86 开机全链路 · 代码级深度解析</title>
+<style>
+  body { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; max-width: 1020px; margin: 0 auto; padding: 28px 32px; color: #24292f; line-height: 1.8; background: #fff; }
+  h1 { color: #1a5276; border-bottom: 3px solid #1a5276; padding-bottom: 10px; font-size: 26px; }
+  h2 { color: #21618c; margin-top: 48px; border-left: 5px solid #2874a6; padding-left: 12px; background: #eaf2f8; padding: 6px 12px; border-radius: 0 6px 6px 0; }
+  h3 { color: #2874a6; margin-top: 28px; }
+  pre { background: #0d1117; color: #e6edf3; border-radius: 8px; padding: 14px 18px; overflow-x: auto; font-size: 13px; line-height: 1.55; font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: none; padding: 0; color: inherit; }
+  code { background: #eaf2f8; padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 88%; color: #1a5276; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; }
+  th, td { border: 1px solid #aab7b8; padding: 7px 12px; text-align: left; }
+  th { background: #d6eaf8; }
+  tr:nth-child(even) { background: #f8f9f9; }
+  blockquote { border-left: 4px solid #95a5a6; margin: 14px 0; padding: 10px 18px; background: #f4f6f7; color: #424949; border-radius: 0 6px 6px 0; }
+  blockquote p { margin: 4px 0; }
+  hr { border: none; border-top: 2px dashed #bdc3c7; margin: 36px 0; }
+  ul { padding-left: 26px; }
+  li { margin: 4px 0; }
+  .toc-box { background: #eaf2f8; border: 1px solid #aed6f1; padding: 16px 28px; border-radius: 10px; margin: 20px 0 40px; }
+  .toc-box .toc { background: none; border: none; padding: 0; }
+  .toc ul { list-style: none; padding-left: 14px; }
+  .toc a { color: #21618c; text-decoration: none; }
+  .toc > ul > li { font-weight: bold; margin: 6px 0; }
+  .toc ul ul li { font-weight: normal; }
+  strong { color: #943126; }
+  em { color: #7d6608; }
+  p { margin: 12px 0; }
+  .footer { color: #7f8c8d; font-size: 12px; text-align: center; margin-top: 50px; border-top: 1px solid #d5dbdb; padding-top: 14px; }
+</style>
+</head>
+<body>
+<h1 id="x86">x86 开机全链路 · 代码级深度解析</h1>
+<div class="toc-box"><b>📑 目录</b><ul style="margin:8px 0 0 0;"><li><a href="#_2">全链一图</a></li>
+<li><a href="#0-cpu">第 0 站：CPU 复位——没有任何代码，只有电路</a></li>
+<li><a href="#1-bios">第 1 站：BIOS 固件</a></li>
+<li><a href="#2-grub">第 2 站：GRUB 三段接力</a></li>
+<li><a href="#3-linux-bzimage">第 3 站：Linux 内核自解压（bzImage 内部三段结构）</a></li>
+<li><a href="#4">第 4 站：内核初始化（精读过的部分，索引留档）</a></li>
+<li><a href="#5-systemd">第 5 站：systemd</a></li>
+<li><a href="#6">第 6 站：登录</a></li>
+<li><a href="#agrub-boot-protocol">附录 A：GRUB ↔ 内核 Boot Protocol 字段对照</a></li>
+<li><a href="#b">附录 B：闭源环节与开源替代</a></li>
+<li><a href="#c">附录 C：建议阅读路线（半天量）</a></li>
+<li><a href="#dqemu">附录 D：qemu 实验命令（观察这条链）</a></li></ul></div>
+<div class="toc-box"><b>目录</b><ul></ul></div>
+<blockquote>
+<p>从按下电源键到登录界面，每一站执行了什么代码、源文件在哪、逐行注释。</p>
+<p>源码全部已下载到本地，文中路径可直接打开阅读：
+- SeaBIOS（开源 BIOS）：<code>~/workspace/boot-code-reading/seabios-1.17.0/</code>
+- GRUB 2.14（引导器）：<code>~/workspace/boot-code-reading/grub-2.14/</code>
+- Linux 7.3.0（内核，亲手编译版）：<code>~/workspace/kernel-build/src/linux-7.3/</code></p>
+<p>全链条只有 3 处闭源（无法提供代码）：实体主板 BIOS、UEFI 固件、CPU 芯片内部微码。
+但每处都有开源等价物可读：SeaBIOS（QEMU 虚拟机在用）、EDK2/OVMF、——读完即懂原理。</p>
+</blockquote>
+<hr />
+<h2 id="_1">目录</h2>
+<ul>
+<li>第 0 站：CPU 复位——硬编码的第一跳</li>
+<li>第 1 站：BIOS 固件（SeaBIOS 源码）</li>
+<li>第 2 站：GRUB 三段接力</li>
+<li>第 3 站：Linux 内核自解压</li>
+<li>第 4 站：内核初始化 start_kernel</li>
+<li>第 5 站：systemd（PID 1）</li>
+<li>第 6 站：登录</li>
+<li>附录 A：GRUB ↔ 内核 启动协议对照表</li>
+<li>附录 B：闭源环节与开源替代</li>
+<li>附录 C：建议阅读路线</li>
+<li>附录 D：qemu 实验命令</li>
+</ul>
+<hr />
+<h2 id="_2">全链一图</h2>
+<pre><code>电源(电路) ──→ 0xFFFFFFF0(硬编码地址)
+   │
+   ▼ ①SeaBIOS romlayout.S: reset_vector → entry_post
+   │        post.c: 内存检测/POST自检
+   │        boot.c: boot_disk() 读磁盘第0扇区, 校验 55AA, 跳到 0x7C00
+   ▼ ②GRUB boot.S: _start(0x7C00, 446字节) ──接力──→ diskboot.S ──→ core.img
+   │        linux.c: grub_cmd_linux() 读 vmlinuz, 验 &quot;HdrS&quot; 协议
+   │        linux.c: grub_linux_boot() EIP=code32_start, 起跳!
+   ▼ ③内核 header.S: _start(实模式) → main.c 探测内存
+   │        compressed/head_64.S: 切64位, 配5级页表
+   │        compressed/misc.c: decompress_kernel() 解压516MB的vmlinux球
+   ▼ ④内核真身: head_64.S建页表 → x86_64_start_kernel → init/main.c: start_kernel()
+   │        rest_init() → kernel_init() → execve(&quot;/sbin/init&quot;)
+   ▼ ⑤systemd(PID 1): 按依赖图并行拉起服务
+   ▼ ⑥getty/login: 登录提示符
+</code></pre>
+<p><strong>核心思想：每站代码只获得一点点新能力，并用它去找下一站</strong>——这叫 bootstrap（自举）。
+- CPU 复位后：只会取指执行 → 跳 BIOS
+- BIOS：会读磁盘扇区（不认识文件系统）→ 读 512 字节 MBR
+- MBR 446 字节：会算扇区位置 → 拉 GRUB 核心
+- GRUB 核心：会读 ext4/FAT 文件系统 → 找到 vmlinuz
+- 内核：会管理一切 → 拉起 systemd
+- systemd：会管理服务 → 给你登录界面</p>
+<p>每一跳都"能力升级一点点"，这是开机链条的设计精髓。</p>
+<hr />
+<h2 id="0-cpu">第 0 站：CPU 复位——没有任何代码，只有电路</h2>
+<p>按电源 → 电源就绪信号 (PWRGD) → CPU 硬件复位电路动作：</p>
+<ol>
+<li>所有寄存器清零/置默认值</li>
+<li><strong>EIP（指令指针）被硬件强制设为 0xFFFFFFF0</strong>（4GB 内存地址空间的顶部减 16）</li>
+<li>CPU 从这个地址取第一条指令并执行</li>
+</ol>
+<p><strong>关键点</strong>：0xFFFFFFF0 不是内存条上的地址，而是被芯片组映射到<strong>主板 BIOS 闪存芯片</strong>的末尾。
+也就是说：CPU 复位后执行的第一条指令，物理上住在 BIOS 芯片里——这就是"固件先于一切"的物理实现。</p>
+<blockquote>
+<p>这一段没有源码可看——它是 CPU 硅片设计和主板电路设计。
+x86 手册（Intel SDM Volume 3, "RESET"章节）描述了这个行为。</p>
+</blockquote>
+<hr />
+<h2 id="1-bios">第 1 站：BIOS 固件</h2>
+<p>实体主板的 BIOS 是厂商闭源固件。但 <strong>SeaBIOS 是一个完整的开源 BIOS 实现</strong>——
+QEMU 虚拟机里跑的就是它（你之前 <code>qemu-system-x86_64</code> 启动自制 ISO 时，开机头几屏输出就是 SeaBIOS 打的）。
+以下代码 100% 等价于实体机 BIOS 干的事。</p>
+<h3 id="11-0xfffffff0-2">1.1 复位向量：0xFFFFFFF0 处的全部内容（2 字节指令）</h3>
+<p><strong>文件：<code>seabios-1.17.0/src/romlayout.S</code> 第 688 行</strong></p>
+<pre><code class="language-asm">        ORG 0xfff0                    // 【链接器指令】把下面这段放到 BIOS 镜像偏移 0xFFF0 处
+                                    // —— 编译后正好落在物理 0xFFFFFFF0，CPU 复位后从这执行
+        .global reset_vector
+reset_vector:
+        ljmpw $SEG_BIOS, $entry_post  // 【一条远跳转】16位实模式远跳：
+                                    //   段=BIOS基址, 偏移=entry_post
+                                    //   从 4G 顶部跳回 BIOS 主体代码区
+</code></pre>
+<p><strong>就这一条指令，完成了"从 CPU 复位到 BIOS 开始工作"的交接。</strong>
+<code>ORG 0xfff0</code> 是整个链条的第一块砖——复位后 CPU 取指的地址和这段代码的链接地址严丝合缝。</p>
+<h3 id="12-post">1.2 POST 入口：区分冷启动 / 热启动</h3>
+<p><strong>文件：<code>romlayout.S</code> 第 594 行</strong></p>
+<pre><code class="language-asm">entry_post:
+        cmpl $0, %cs:HaveRunPost      // 【查询全局标志】之前跑过 POST 吗?
+        jnz  entry_resume             // 跑过 → 是 resume(从休眠唤醒/热重启), 走恢复流程
+        ENTRY_INTO32 _cfunc32flat_handle_post   // 没跑过 → 冷启动:
+                                                //   宏 = 切换到32位保护模式 + 调 C 函数 handle_post()
+</code></pre>
+<p><code>ENTRY_INTO32</code> 宏展开后是同文件 26 行处的 <code>transition32</code>（16→32 位切换的经典例程）：</p>
+<pre><code class="language-asm">transition32:
+        cli                            // 关中断(切换过程不能被打断)
+        cld                            // 清方向标志(字符串操作方向固定)
+
+        // 关 NMI(不可屏蔽中断)——通过写 CMOS 端口
+        movl $CMOS_RESET_CODE|NMI_DISABLE_BIT, %eax
+        outb %al, $PORT_CMOS_INDEX     // CMOS 端口 0x70: 选寄存器
+        inb  $PORT_CMOS_DATA, %al      // 端口 0x71: 读数据(触发 NMI 屏蔽)
+
+        // 打开 A20 地址线——历史包袱:
+        // 8086 时代地址回绕到 1MB 的兼容行为, x86 必须显式解锁第 21 根地址线
+        inb  $PORT_A20, %al
+        orb  $A20_ENABLE_BIT, %al
+        outb %al, $PORT_A20
+
+        // 加载中断描述符表 + 全局描述符表, 然后置 CR0.PE 位 → 进入32位保护模式
+        lidtw %cs:pmode_IDT_info       // IDT: 中断向量表
+        ...                            // lgdt 加载 GDT
+        // movl %eax,%cr0 | CR0_PE → PE=1, 此后 CPU 是 32 位状态
+</code></pre>
+<p><strong>注意</strong>：这一段 16 位实模式汇编，是全链条里最"原始"的代码——
+此时的计算机只有：1 个 CPU、1MB 可见内存、没有栈、没有中断、没有设备。
+所有现代设施（保护模式、分页、设备驱动）都要从这里一砖一瓦盖起来。</p>
+<h3 id="13-post">1.3 POST 自检与设备初始化</h3>
+<p>C 代码：<code>seabios-1.17.0/src/post.c</code> 的 <code>handle_post() → maininit()</code>：</p>
+<pre><code>干的事(按序):
+  1. 初始化串口/键盘/显示(这时候屏幕开始有输出)
+  2. 内存检测(POST 屏幕上跳的内存计数数字)
+  3. PCI 总线枚举(扫描所有设备, 给它们分配资源)
+  4. 检测硬盘/光驱/USB 存储 → 生成启动设备列表
+  5. 建 BIOS 中断表(IVT): 著名的 INT 13h(磁盘服务)/INT 10h(显示服务)
+     ——这些&quot;BIOS中断&quot;就是后面 GRUB 446字节代码能调用的&quot;系统调用&quot;
+</code></pre>
+<h3 id="14-mbr-55aa-0x7c00-bios">1.4 读 MBR、校验 55AA、跳 0x7C00 —— BIOS 的最后一击</h3>
+<p><strong>文件：<code>seabios-1.17.0/src/boot.c</code> 第 860~920 行（完整原文）</strong></p>
+<pre><code class="language-c">// 跳转到引导扇区代码前的准备
+static void
+call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
+{
+    dprintf(1, &quot;Booting from %04x:%04x\n&quot;, bootsegip.seg, bootsegip.offset);
+    struct bregs br;
+    memset(&amp;br, 0, sizeof(br));
+    br.flags = F_IF;
+    br.code = bootsegip;
+    // 【传参约定】寄存器 DL=启动盘号(0x80=第一块硬盘)
+    //            AX=0xAA55(约定俗成的魔数,引导扇区可用来识别环境)
+    br.dl = bootdrv;
+    br.ax = 0xaa55;
+    farcall16(&amp;br);           // 16位远调用:跳过去, 不再回来
+}
+
+// 从磁盘(软盘或硬盘)启动
+static void
+boot_disk(u8 bootdrv, int checksig)
+{
+    u16 bootseg = 0x07c0;     // 【历史约定】引导扇区被读到内存 0x7C00 处
+                              // (0x07C0:0x0000 的另一种表示, DOS 时代定下)
+
+    // ---- 读第 1 扇区(MBR): 调用 INT 13h ----
+    struct bregs br;
+    memset(&amp;br, 0, sizeof(br));
+    br.flags = F_IF;
+    br.dl = bootdrv;          // 驱动器号
+    br.es = bootseg;          // 读到哪个内存段
+    br.ah = 2;                // INT 13h 功能号 02 = 读扇区
+    br.al = 1;                // 读 1 个扇区
+    br.cl = 1;                // 从第 1 扇区开始(即 LBA 0, MBR!)
+    call16_int(0x13, &amp;br);    // 调 BIOS 磁盘中断服务
+
+    if (br.flags &amp; F_CF) {    // CF 进位标志 = 出错
+        printf(&quot;Boot failed: could not read the boot disk\n\n&quot;);
+        return;
+    }
+
+    // ---- 校验 MBR 签名 55AA ----
+    if (checksig) {
+        struct mbr_s *mbr = (void*)0;
+        if (GET_FARVAR(bootseg, mbr-&gt;signature) != MBR_SIGNATURE) {
+            // 屏幕上那句 &quot;Boot failed: not a bootable disk&quot; 就来自这!
+            printf(&quot;Boot failed: not a bootable disk\n\n&quot;);
+            return;
+        }
+    }
+
+    // ---- 跳!控制权交给 MBR 里的代码 ----
+    /* 规范化 bootseg:bootip */
+    u16 bootip = (bootseg &amp; 0x0fff) &lt;&lt; 4;
+    bootseg &amp;= 0xf000;
+    call_boot_entry(SEGOFF(bootseg, bootip), bootdrv);
+}
+</code></pre>
+<p><strong>BIOS 的一生到此结束</strong>（直到下次开机）。它做的最后一件事：
+把磁盘第一个扇区（512 字节，含 GRUB 第一段）读进 0x7C00，校验末尾两字节是 <code>55 AA</code>，然后跳过去。</p>
+<blockquote>
+<p><strong>为什么是 0x7C00？</strong> 1981 年 IBM PC 的设计：DOS 1.0 需要 32KB 内存，
+0x7C00 = 32KB - 1024（留 1KB 给引导扇区自己+栈）。这个魔数被 x86 沿用至今。</p>
+<p><strong>为什么验 55AA？</strong> BIOS 固件只有几 KB，不可能理解文件系统/分区表——
+只能约定"最后一个字节是 55 AA 就当它是引导扇区"，把可信度判断降到最低成本。
+这就是"约定最小，自由最大"的祖师爷设计。</p>
+</blockquote>
+<hr />
+<h2 id="2-grub">第 2 站：GRUB 三段接力</h2>
+<p>文件：<code>~/workspace/boot-code-reading/grub-2.14/</code></p>
+<p>GRUB 的困境：完整功能（菜单、图形、ext4 驱动）需要几百 KB，但 BIOS 只给它 512 字节。
+解法 = <strong>三段接力</strong>（每段刚够拉起下一段）：</p>
+<pre><code>[MBR 512字节] boot.S ──拉──→ [~30KB] diskboot.S+core.img 前段 ──拉──→ [完整GRUB] 
+</code></pre>
+<h3 id="21-boots-mbr-446">2.1 第一段：boot.S —— MBR 里的 446 字节</h3>
+<p><strong>文件：<code>grub-2.14/grub-core/boot/i386/pc/boot.S</code> 第 119 行起（完整原文+注释）</strong></p>
+<pre><code class="language-asm">        /* 告诉汇编器生成 16 位指令——实模式代码! */
+        .code16
+
+.globl _start, start;
+_start:                           // 【BIOS 把我们加载到 0x7C00 并跳过来】
+start:
+        /*
+         * GRUB 的 MBR 兼容 FAT/HPFS 的 BPB(BIOS参数块)——
+         * 某些工具会往引导扇区前部写 BPB, 这里预留位置避开
+         */
+        jmp  LOCAL(after_BPB)     // 跳过 BPB 兼容区
+        nop
+        ...                        // (BPB 占位区, 被 grub-install 时按需填充)
+
+LOCAL(after_BPB):
+
+/* ---- 通用初始化 ---- */
+        cli                        // 先关中断——栈还没设, 现在被打断就崩
+
+boot_drive_check:
+        /*
+         * 兼容怪 BIOS:有些 BIOS 不把启动盘号正确放进 DL 寄存器。
+         * 这里自检: 如果 GRUB 装在硬盘, 但 DL 不带 0x80 标志(硬盘位),
+         * 就强行认定 DL=0x80(第一块硬盘)——因为不可能从别的盘启动
+         */
+        jmp   3f                   // (grub-setup 可能改写这个跳转)
+        testb $0x80, %dl           // DL 的 0x80 位(硬盘标志)设了吗?
+        jz 2f
+3:      testb $0x70, %dl           // 只接受 0x00-0x0f(软盘)或 0x80-0x8f(硬盘)
+        jz 1f
+2:      movb $0x80, %dl            // 修正为第一块硬盘
+1:
+        /*
+         * 又一个怪BIOS兼容:有的跳到 07C0:0000 而不是 0000:7C00
+         * (两个表示物理地址相同, 但段寄存器值不同, 影响后续寻址)
+         * 远跳转强制规范化 CS=0
+         */
+        ljmp $0, $real_start
+
+real_start:
+        /* 设数据段/栈段为 0, 建立干净的段环境 */
+        xorw %ax, %ax
+        movw %ax, %ds
+        movw %ax, %ss
+        /* 栈放到 0x2000(引导扇区上方, 不会覆盖自己) */
+        movw $GRUB_BOOT_MACHINE_STACK_SEG, %sp
+        sti                        // 栈就绪, 安全了, 重开中断
+
+        /* save boot drive (DL) for later use */
+        ...                        // (存盘号到变量)
+
+        /* 后续: 用 INT 13h 扩展读(AH=42h, LBA寻址)从 MBR 之后连续读取
+           core.img 的前半段(diskboot.S 编译产物), 读到 0x8000 起的内存,
+           然后 ljmp 过去 —— MBR 的 446 字节使命完成 */
+</code></pre>
+<p><strong>这段代码的看点</strong>：
+1. 大量篇幅在处理"怪 BIOS 兼容"——真实世界 512 字节里一半是踩坑经验
+2. 全程只有 INT 13h 一个武器（BIOS 留下的唯一遗产）
+3. 编译产物正好 446 字节 + 64 字节分区表 + 55AA = 512</p>
+<h3 id="22-diskboots">2.2 第二段：diskboot.S</h3>
+<p><strong>文件：<code>grub-2.14/grub-core/boot/i386/pc/diskboot.S</code></strong></p>
+<p>第二扇区（紧挨 MBR 之后）。任务同样单一：
+读 core.img 主体（几十 KB，含 ext2/FAT 文件系统驱动和 GRUB 内核）到内存，跳过去。</p>
+<p>关键点：core.img 各扇区的磁盘位置在 grub-install 安装时<strong>硬编码</strong>进了 diskboot.S 编译产物——
+这就是为什么"GRUB 安装"必须写盘，而不仅仅复制文件。</p>
+<h3 id="23-grub">2.3 GRUB 核心复活 → 菜单 → 加载你的内核</h3>
+<p>core.img 起来后进入 <code>grub-core/kern/main.c: grub_main()</code>：
+初始化 → 加载模块（normal.mod 菜单模块等）→ 读 grub.cfg → 显示菜单 → 等用户选/超时。</p>
+<p>你 ISO 里的 grub.cfg（当时我写的）：</p>
+<pre><code>menuentry &quot;My Kernel 7.3.0 (liang build)&quot; {
+    linux /boot/vmlinuz console=tty0 console=ttyS0     ← 这行触发 grub_cmd_linux()
+    initrd /boot/initramfs.cpio.gz                      ← 这行触发 grub_cmd_initrd()
+}
+</code></pre>
+<h3 id="24-grub_cmd_linuxgrub">2.4 grub_cmd_linux()——GRUB 装载内核的核心函数</h3>
+<p><strong>文件：<code>grub-2.14/grub-core/loader/i386/linux.c</code> 第 675 行起（节选原文）</strong></p>
+<pre><code class="language-c">static grub_err_t
+grub_cmd_linux (grub_command_t cmd __attribute__ ((unused)),
+                int argc, char *argv[])
+{
+  grub_file_t file = 0;
+  struct linux_kernel_params lh;             // 内核头部的镜像(见下节 header.S)
+  ...
+  file = grub_file_open (argv[0]);           // 打开 /boot/vmlinuz(你的bzImage!)
+
+  grub_file_read (file, &amp;lh, sizeof (lh));   // 读出内核头部协议字段
+
+  /* ---------- 三重校验: 确认这是 Linux 内核 ---------- */
+
+  // 1. boot_flag 必须是 0xAA55(和 MBR 签名同一个魔数, 双重用途)
+  if (lh.boot_flag != grub_cpu_to_le16_compile_time (0xaa55))
+    return grub_error (GRUB_ERR_BAD_OS, &quot;invalid magic&quot;);
+
+  // 2. header 域必须是 &quot;HdrS&quot;(0x53726448) —— Linux Boot Protocol 的暗号!
+  //    且协议版本 &gt;= 0x0203
+  if (lh.header != grub_cpu_to_le32_compile_time (GRUB_LINUX_I386_MAGIC_SIGNATURE)
+      || grub_le_to_cpu16 (lh.version) &lt; 0x0203)
+    return grub_error (GRUB_ERR_BAD_OS, &quot;version too old&quot;);
+
+  // 3. loadflags 的 BIG_KERNEL 位必须置位(= 确认是 bzImage 而非古老的 zImage)
+  if (! (lh.loadflags &amp; GRUB_LINUX_FLAG_BIG_KERNEL))
+    return grub_error (GRUB_ERR_BAD_OS, &quot;must be a bzImage&quot;);
+
+  /* ---------- 计算布局 ---------- */
+  setup_sects = lh.setup_sects;              // 头部声明: setup 区有几个扇区
+  if (! setup_sects)
+    setup_sects = GRUB_LINUX_DEFAULT_SETUP_SECTS;
+  real_size = setup_sects &lt;&lt; GRUB_DISK_SECTOR_BITS;
+
+  /* GRUB 把整个内核安排进内存:
+     - setup 区(header.S/main.c 的实模式部分) → 实模式地址 0x90000 一带
+     - 内核主体(压缩球)      → code32_start 指定的 0x100000(1MB, 低端 RAM 安全区)
+     - 命令行/console=ttyS0  → 按 boot protocol 塞进 params 页
+     - initramfs             → 高内存区, 地址写进 params 的 ramdisk_image 字段
+  */
+  ...
+  /* 然后 grub_cmd_initrd() 加载你的 initramfs.cpio.gz 到高内存,
+     把地址/长度写进 lh.ramdisk_image / lh.ramdisk_size */
+}
+
+/* ---------- 最后起跳: grub_linux_boot() ---------- */
+static grub_err_t
+grub_linux_boot (void)
+{
+  ...
+  /* 切回实模式模拟内核期望的环境, 把实模式参数块指针放进 ESI,
+     然后把 EIP 设为内核头声明的入口地址 */
+  state.ebp = state.edi = state.ebx = 0;
+  state.esi = ctx.real_mode_target;          // ESI = 参数块物理地址(内核靠它找到一切)
+  state.esp = ctx.real_mode_target;
+  state.eip = ctx.params-&gt;hdr.code32_start;  // EIP = 0x100000(内核32位入口)
+  return grub_relocator32_boot (relocator, state, 0);   // ★ GRUB 使命终结, 控制权交内核
+}
+</code></pre>
+<p><strong>GRUB 一生的总结</strong>：从 BIOS 手里接过 512 字节的惨淡开局，
+一路攒家底（文件系统驱动、内存布局、菜单），最后把 vmlinuz 摆进内存、
+参数放好、EIP 指过去——干净离场。</p>
+<hr />
+<h2 id="3-linux-bzimage">第 3 站：Linux 内核自解压（bzImage 内部三段结构）</h2>
+<p>回忆 bzImage 的结构（你编译产物 17MB）：</p>
+<pre><code>bzImage (17MB)
+├── 实模式 setup 区    ← header.S + main.c(arch/x86/boot/)      【GRUB 跳到这】
+├── 解压器             ← compressed/head_64.S + misc.c            【第二跳到这】
+└── 压缩的 vmlinux 球  ← 你那个 516MB 内核, xz/gz 压缩成 ~10MB   【第三跳到这】
+</code></pre>
+<h3 id="31-headers-grub">3.1 header.S —— GRUB 跳进来的落点，也是"协议"本身</h3>
+<p><strong>文件：<code>kernel-build/src/linux-7.3/arch/x86/boot/header.S</code> 第 245 行起（原文）</strong></p>
+<pre><code class="language-asm">        .globl _start
+_start:                                  // 【GRUB 的 eip 落在这】
+        .byte 0xeb                        // 2 字节短跳转指令的机器码(0xEB=JMP rel8)
+        .byte start_of_setup-1f           // 跳到 setup 主体(跳过头部数据区)
+1:
+        /* ================= Linux Boot Protocol 头部 =================
+           GRUB 的 grub_cmd_linux() 读/校验/填写的正是下面这些字段!
+           两边代码隔空相认, 字段一一对应 */
+
+        .ascii &quot;HdrS&quot;                     // ★ GRUB 校验的魔数(GRUB_LINUX_I386_MAGIC_SIGNATURE)
+        .word 0x020f                      // ★ 协议版本(GRUB 要求 &gt;= 0x0203)
+        .globl realmode_swtch
+realmode_swtch:  .word 0, 0               // 实模式切换钩子(默认无)
+        .word kernel_version-512          // 指向内核版本字符串(&quot;Linux version 7.3.0...&quot;)
+
+type_of_loader:  .byte 0                  // ★ GRUB 把自己的编号写进这里
+                                          //   (内核开机后 dmesg 能看到&quot;who loaded me&quot;)
+
+loadflags:
+        .byte LOADED_HIGH                 // ★ GRUB 校验的 BIG_KERNEL 位在这!
+
+setup_move_size: .word 0x8000             // 历史字段(setup 迁移大小)
+
+code32_start:                             // ★★ GRUB 的 eip 值从这读!
+        .long 0x100000                    // 32位入口默认 0x100000(1MB处)
+                                          //   GRUB 可以改写(通常不改)
+
+ramdisk_image:  .long 0                   // ★ GRUB 把 initramfs 的地址写进这!
+                                          //   (你的 initramfs.cpio.gz 所在物理内存)
+ramdisk_size:   .long 0                   // ★ 以及长度
+
+heap_end_ptr:   .word _end+STACK_SIZE-512 // setup 栈/堆边界
+        ...
+</code></pre>
+<p><strong>强烈建议把 <code>linux.c:675</code>（GRUB 侧）和 <code>header.S:245</code>（内核侧）并排打开对照</strong>——
+这是全链条最精妙的"隔空对话"：GRUB 读的字段、写的字段，全部在这个头部里。
+这个约定叫 <strong>Linux/x86 Boot Protocol</strong>，文档在内核源码
+<code>Documentation/arch/x86/boot.rst</code>（也可读）。</p>
+<p>之后流程：实模式 main.c（探测内存/键盘/A20）→ <code>go_to_protected_mode()</code>
+（最后一次实模式操作）→ 32 位 → <code>startup_32</code> → 长模式。</p>
+<h3 id="32-compressedhead_64s-64">3.2 compressed/head_64.S —— 64 位解压现场</h3>
+<p><strong>文件：<code>arch/x86/boot/compressed/head_64.S</code> 第 400 行起（原文）</strong></p>
+<pre><code class="language-asm">        /* --- 此时已是 64 位长模式, 但跑的是&quot;解压器&quot;, 不是内核本体 --- */
+
+        movq %r15, %rdi
+        leaq rva(top_pgtable)(%rbx), %rsi
+        call configure_5level_paging     // 配置5级页表(现代x86-64: 57位地址空间)
+                                          // 顺便决定用4级还是5级(按CPU能力和KASLR需求)
+
+        pushq $0
+        popfq                            // 清 EFLAGS(残留标志位可能捣乱)
+
+        /* --- 关键技巧: &quot;就地解压&quot;前的搬家 --- */
+        /*
+         * 解压目标区域和压缩球当前位置可能重叠。
+         * 解法: 先把压缩球整体搬到解压缓冲区的【尾部】,
+         * 这样解压时从头往后展开, 不会踩到还没解压的数据
+         */
+        leaq (_bss-8)(%rip), %rsi        // 源: 压缩球当前位置
+        leaq rva(_bss-8)(%rbx), %rdi     // 目的: 缓冲区末尾
+        movl $(_bss - startup_32), %ecx
+        shrl $3, %ecx                    // 按字节算→按8字节(quad)算
+        std                               // 反方向拷贝!(从尾部往前搬)
+        rep movsq                         // CPU 块拷贝指令, 一条指令搬完
+        cld                               // 恢复正方向
+
+        /* GDT 可能被刚才的拷贝覆盖了, 重新加载一份新的 */
+        leaq rva(gdt64)(%rbx), %rax
+        leaq rva(gdt)(%rbx), %rdx
+        movq %rdx, 2(%rax)
+        lgdt (%rax)                       // 重新装全局描述符表
+
+        /* ... 然后 call extract_kernel → decompress_kernel() */
+</code></pre>
+<h3 id="33-miscc-decompress_kernelvmlinux">3.3 misc.c —— decompress_kernel()，vmlinux 复活的地方</h3>
+<p><strong>文件：<code>arch/x86/boot/compressed/misc.c</code> 第 345 行（原文）</strong></p>
+<pre><code class="language-c">extern unsigned char input_data[];        // ← 压缩的 vmlinux 球!
+                                          //   编译时作为一个&quot;数据数组&quot;嵌进解压器——
+                                          //   你那 516MB 的 vmlinux, 压缩后 ~10MB,
+                                          //   以字节数组的形式躺在 bzImage 里
+extern unsigned int input_len, output_len;
+
+unsigned long decompress_kernel(unsigned char *outbuf, unsigned long virt_addr,
+                                void (*error)(char *x))
+{
+        unsigned long entry;
+
+        /* 解压器自己也要内存(它跑在内核起来之前): 用静态预留的 boot_heap */
+        if (!free_mem_ptr) {
+                free_mem_ptr     = (unsigned long)boot_heap;
+                free_mem_end_ptr = (unsigned long)boot_heap + sizeof(boot_heap);
+        }
+
+        /* ★ 真正的解压: input_data(xz/gz压缩的vmlinux) → outbuf
+           屏幕上那句 &quot;Decompressing Linux... Parsing ELF... done&quot; 期间执行的就是这 */
+        if (__decompress(input_data, input_len, NULL, NULL, outbuf, output_len,
+                         NULL, error) &lt; 0)
+                return ULONG_MAX;        // 解压失败→error()打日志→死机
+
+        entry = parse_elf(outbuf);        // 解出来的是完整ELF文件!
+                                          // 解析ELF头,把各段(Program Section)摆到
+                                          // 虚拟地址, 拿到入口地址(vmlinux的_entry)
+        handle_relocations(outbuf, output_len, virt_addr);
+                                          // KASLR 重定位: 把内核随机挪到
+                                          // 一个安全偏移(防内存攻击), 修正所有地址引用
+
+        return entry;                     // 入口地址交还给 head_64.S, 它 ljmp 过去
+}
+</code></pre>
+<p><strong>至此"压缩包"旅程结束</strong>：解压器把自己解雇，跳进解压出来的 vmlinux 入口——
+真正的大内核（start_kernel 那个世界）从这一刻才存在。</p>
+<hr />
+<h2 id="4">第 4 站：内核初始化（精读过的部分，索引留档）</h2>
+<pre><code>解压出的 vmlinux 入口
+  → arch/x86/kernel/head_64.S: 逐级建正式页表、每CPU初始化
+  → arch/x86/kernel/head64.c: x86_64_start_kernel() — C 语言第一站
+      (传下来那个 ESI 参数块被存成 boot_params, 内存布局/cmdline全在里面)
+  → init/main.c:1002 start_kernel() — 总装配流水线
+      set_task_stack_end_magic → local_irq_disable → setup_arch(认内存/CPU)
+      → mm_core_init(内存管理) → sched_init(调度器) → init_IRQ+local_irq_enable
+      → console_init(屏幕点亮!) → fork_init/vfs/security 各子系统
+  → init/main.c: rest_init()
+      kernel_thread(kernel_init)  ← 1号进程
+      kernel_thread(kthreadd)     ← 2号进程(内核线程之父)
+      0号进程降级为 idle           ← CPU空闲时永远在这自转
+  → kernel_init(): 挂根文件系统(你的initramfs!) → run_init_process()
+  → try_to_run_init_process(&quot;/sbin/init&quot;) — execve 第一个用户态程序
+</code></pre>
+<h2 id="5-systemd">第 5 站：systemd</h2>
+<p>内核 execve("/sbin/init") → systemd（二进制 <code>/usr/lib/systemd/systemd</code>，源码在 21GB 镜像 <code>pool/main/s/systemd/</code>）：
+读 <code>/etc/systemd/system/default.target</code> → 按依赖拓扑并行拉起服务
+（网络 NetworkManager/静态 ip、日志 journald、getty）→ 全系统就绪。</p>
+<h2 id="6">第 6 站：登录</h2>
+<p>systemd 拉起 getty（<code>getty@tty1.service</code>）→ 打印 login 提示符 → 你输入密码 → shell。</p>
+<hr />
+<h2 id="agrub-boot-protocol">附录 A：GRUB ↔ 内核 Boot Protocol 字段对照</h2>
+<table>
+<thead>
+<tr>
+<th>字段(header.S)</th>
+<th>GRUB 侧做什么(linux.c)</th>
+<th>内核侧谁消费</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>boot_flag = 0xAA55</code></td>
+<td>校验是 Linux 内核</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>"HdrS"</code> 魔数</td>
+<td>校验协议暗号</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>version = 0x020f</code></td>
+<td>要求 ≥0x0203 才继续</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>loadflags LOADED_HIGH</code></td>
+<td>校验是 bzImage</td>
+<td>main.c</td>
+</tr>
+<tr>
+<td><code>code32_start = 0x100000</code></td>
+<td><strong>写入 EIP 起跳</strong></td>
+<td>head_64.S</td>
+</tr>
+<tr>
+<td><code>type_of_loader</code></td>
+<td><strong>写 GRUB 自己的编号</strong></td>
+<td>开机日志可见</td>
+</tr>
+<tr>
+<td><code>ramdisk_image/size</code></td>
+<td><strong>写 initramfs 地址/长度</strong></td>
+<td>main.c → initramfs 解包</td>
+</tr>
+<tr>
+<td><code>cmd_line_ptr</code></td>
+<td><strong>写命令行字符串地址</strong></td>
+<td>parse_early_param</td>
+</tr>
+<tr>
+<td>setup 区大小</td>
+<td>决定装载布局</td>
+<td>main.c 迁移用</td>
+</tr>
+</tbody>
+</table>
+<h2 id="b">附录 B：闭源环节与开源替代</h2>
+<table>
+<thead>
+<tr>
+<th>闭源</th>
+<th>开源替代</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>实体主板 BIOS</td>
+<td><strong>SeaBIOS（本文第1站）</strong></td>
+<td>QEMU 全系统在用</td>
+</tr>
+<tr>
+<td>实体机 UEFI</td>
+<td><strong>EDK2 / OVMF</strong></td>
+<td>QEMU UEFI 模式在用</td>
+</tr>
+<tr>
+<td>CPU 微码/ROM</td>
+<td>无(芯片内部)</td>
+<td>永远闭源</td>
+</tr>
+</tbody>
+</table>
+<h2 id="c">附录 C：建议阅读路线（半天量）</h2>
+<pre><code>1. seabios-1.17.0/src/romlayout.S   688行起   5分钟   复位向量2字节,震撼感
+2. seabios-1.17.0/src/boot.c        860行起   15分钟  INT13h/55AA/0x7C00 全在场
+3. grub-2.14/.../boot/i386/pc/boot.S 119行起  30分钟  446字节的挣扎(注释极佳)
+4. grub-2.14/.../loader/i386/linux.c 675行起 30分钟  协议消费方
+5. 内核 arch/x86/boot/header.S     245行起   30分钟  协议提供方(和4对照读!)
+6. 内核 compressed/misc.c          345行起   15分钟  vmlinux 复活
+7. 内核 init/main.c                1002行起  已精读   start_kernel
+</code></pre>
+<h2 id="dqemu">附录 D：qemu 实验命令（观察这条链）</h2>
+<pre><code class="language-bash"># 看你自己的ISO完整走一遍这条链(SeaBIOS→GRUB→你的内核):
+qemu-system-x86_64 -cdrom ~/workspace/kernel-build/mini-ubuntu.iso -nographic
+
+# 屏幕输出与代码的对应:
+#  &quot;SeaBIOS (version...)&quot;        → romlayout.S/post.c
+#  &quot;Booting from Hard Disk...&quot;   → boot.c: call_boot_entry 的 dprintf
+#  &quot;GNU GRUB...&quot;菜单             → GRUB core
+#  &quot;Decompressing Linux...&quot;      → compressed/misc.c
+#  &quot;Linux version 7.3.0 (liang)&quot; → start_kernel 的 linux_banner
+#  欢迎横幅+shell                 → 你的 /init
+</code></pre>
+<hr />
+<p><em>生成：2026-11-09 · 所有代码取自本地真实源码（SeaBIOS 1.17.0 / GRUB 2.14 / Linux 7.3.0-10.10 Ubuntu 源码包）</em></p>
+<div class="footer">生成于 2026-11-09 · 代码取自本地真实源码: SeaBIOS 1.17.0 / GRUB 2.14 / Linux 7.3.0 (亲手编译版)</div>
+</body>
+</html>

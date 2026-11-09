@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ARM 平台开机全链路 · 代码级深度解析</title>
+<style>
+  body { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; max-width: 1020px; margin: 0 auto; padding: 28px 32px; color: #24292f; line-height: 1.8; background: #fff; }
+  h1 { color: #4a235a; border-bottom: 3px solid #4a235a; padding-bottom: 10px; font-size: 26px; }
+  h2 { color: #6c3483; margin-top: 48px; border-left: 5px solid #8e44ad; padding: 6px 12px; background: #f4ecf7; border-radius: 0 6px 6px 0; }
+  h3 { color: #7d3c98; margin-top: 28px; }
+  pre { background: #0d1117; color: #e6edf3; border-radius: 8px; padding: 14px 18px; overflow-x: auto; font-size: 13px; line-height: 1.55; font-family: "JetBrains Mono", Consolas, monospace; }
+  pre code { background: none; padding: 0; color: inherit; }
+  code { background: #f4ecf7; padding: 1px 6px; border-radius: 4px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 88%; color: #6c3483; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14px; }
+  th, td { border: 1px solid #aab7b8; padding: 7px 12px; text-align: left; }
+  th { background: #ebdef0; }
+  tr:nth-child(even) { background: #f8f9f9; }
+  blockquote { border-left: 4px solid #af7ac5; margin: 14px 0; padding: 10px 18px; background: #f8f9f9; color: #424949; border-radius: 0 6px 6px 0; }
+  blockquote p { margin: 4px 0; }
+  hr { border: none; border-top: 2px dashed #d2b4de; margin: 36px 0; }
+  ul { padding-left: 26px; }
+  li { margin: 4px 0; }
+  .toc-box { background: #f4ecf7; border: 1px solid #d2b4de; padding: 16px 28px; border-radius: 10px; margin: 20px 0 40px; }
+  .toc-box a { color: #6c3483; text-decoration: none; }
+  strong { color: #943126; }
+  .footer { color: #7f8c8d; font-size: 12px; text-align: center; margin-top: 50px; border-top: 1px solid #d5dbdb; padding-top: 14px; }
+  p { margin: 12px 0; }
+</style>
+</head>
+<body>
+<h1>ARM 平台开机全链路 · 代码级深度解析</h1>
+<div class="toc-box"><b>📑 目录</b><ul style="margin:8px 0 0 0;"><li><a href="#arm-sec-0">全链一图（树莓派 4B 实际路径）</a></li>
+<li><a href="#arm-sec-1">第 0 站：上电与 SoC Boot ROM</a></li>
+<li><a href="#arm-sec-2">第 1 站：树莓派 GPU 固件三段链（闭源，但行为透明）</a></li>
+<li><a href="#arm-sec-3">第 2 站：U-Boot 的一生（开源重点站）</a></li>
+<li><a href="#arm-sec-4">第 3 站：Linux arm64 内核入口（head.S 精读）</a></li>
+<li><a href="#arm-sec-5">第 4 站：start_kernel 之后（与 x86 汇合）</a></li>
+<li><a href="#arm-sec-6">第 5 站：systemd（与 x86 相同）</a></li>
+<li><a href="#arm-sec-7">附录 A：ARM64 vs x86 全方位对比（开机链路 + 体系结构）</a></li>
+<li><a href="#arm-sec-8">附录 B：ARM64 Boot Protocol 字段表（Image 头 64 字节）</a></li>
+<li><a href="#arm-sec-9">附录 C：树莓派 config.txt 对照 grub.cfg</a></li>
+<li><a href="#arm-sec-10">附录 D：qemu 模拟 ARM 实验（不买板子也能走这条链）</a></li>
+<li><a href="#arm-sec-11">附录 E：阅读路线（半天量）</a></li></ul></div>
+<blockquote>
+<p>以树莓派 4B（BCM2711，Cortex-A72，arm64）为主线，从上电到登录界面，
+每一站执行什么代码、源文件在哪、逐行注释。并与 x86 链路对照。</p>
+<p>源码全部本地可读：
+- U-Boot 2025.10（引导器）：<code>~/workspace/boot-code-reading/u-boot-2025.10/</code>
+- Linux 7.3.0 内核 arm64 部分：<code>~/workspace/kernel-build/src/linux-7.3/arch/arm64/</code>
+- ARM64 Boot Protocol 文档：内核源码 <code>Documentation/arch/arm64/booting.rst</code></p>
+<p>闭源部分（说清楚）：树莓派 GPU 固件（bootcode.bin/start4.elf）、SoC Boot ROM、
+TrustZone 固件(ATF 的部分二进制由芯片厂提供)。其余全开源。</p>
+</blockquote>
+<hr />
+<h2>目录</h2>
+<ul>
+<li>第 0 站：上电与 SoC Boot ROM（片内 ROM，无代码）</li>
+<li>第 1 站：树莓派 GPU 固件三段链（闭源但行为透明）</li>
+<li>第 2 站：U-Boot 的一生（开源，重点站）</li>
+<li>第 3 站：Linux arm64 内核入口（head.S 精读）</li>
+<li>第 4 站：start_kernel 之后（与 x86 汇合）</li>
+<li>第 5 站：systemd（与 x86 相同）</li>
+<li>附录 A：ARM64 vs x86 开机链路对照总表</li>
+<li>附录 B：ARM64 Boot Protocol（64 字节 Image 头字段表）</li>
+<li>附录 C：树莓派 config.txt 引导配置对照</li>
+<li>附录 D：qemu 模拟实验命令</li>
+<li>附录 E：阅读路线</li>
+</ul>
+<hr />
+<h2 id="arm-sec-0">全链一图（树莓派 4B 实际路径）</h2>
+<pre><code>上电(电路) ──→ BCM2711 Boot ROM(片内只读代码,首块程序在SPI EEPROM)
+   │
+   ▼ ①GPU固件链: bootcode.bin(SPI) → start4.elf(读SD卡FAT32根目录!)
+   │        fixup*.dat → config.txt(你的开机参数在这改)
+   │        GPU固件加载: kernel8.img(arm64内核) + bcm2711-rpi-4-b.dtb
+   │        然后置起CPU(核心0), 跳内核入口
+   ▼ ②Linux内核 primary_entry(arch/arm64/kernel/head.S:85)
+   │        (树莓派官方镜像: GPU固件直接跳内核, U-Boot是&quot;可插入选项&quot;)
+   │        [通用ARM板: BootROM→ATF(ARM Trusted Firmware)→U-Boot→内核]
+   │
+   ▼ ③U-Boot路线(树莓派装了uboot时): SPL→U-Boot proper→bootcmd扫描
+   │        → 从SD/extlinux找到Image+dtb → boot_jump_linux()跳内核
+   ▼ ④arm64内核: _head(64字节头) → primary_entry → 建初始页表
+   │        __primary_switch(开MMU!) → __primary_switched → start_kernel
+   ▼ ⑤start_kernel()(与x86同一份代码!) → rest_init → PID1
+   ▼ ⑥systemd → 登录
+</code></pre>
+<p><strong>和 x86 最大的三个结构差异</strong>（先记住这个再读代码）：</p>
+<table>
+<thead>
+<tr>
+<th>差异</th>
+<th>x86</th>
+<th>ARM/树莓派</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>第一段代码</td>
+<td>BIOS 固件（CPU 从 0xFFFFFFF0 取指）</td>
+<td><strong>SoC Boot ROM</strong>（芯片内部，地址 0）</td>
+</tr>
+<tr>
+<td>引导配置</td>
+<td>GRUB 写死在 MBR→grub.cfg</td>
+<td><strong>GPU 固件读 FAT32 明文文件</strong>（改文件=改引导）</td>
+</tr>
+<tr>
+<td>设备描述</td>
+<td>ACPI 表（固件给）</td>
+<td><strong>设备树 DTB</strong>（一个描述硬件的数据文件，传给内核）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="arm-sec-1">第 0 站：上电与 SoC Boot ROM</h2>
+<p>按电源 → PMIC 电源就绪 → SoC 复位：
+1. Cortex-A72 核心保持复位，<strong>先唤醒 GPU</strong>（VideoCore VI）——树莓派的启动哲学：GPU 是"主引导 CPU"
+2. GPU 从片内 <strong>Boot ROM</strong>（掩膜在硅片里的只读代码）执行：
+   - 读 <strong>SPI EEPROM</strong>（树莓派4焊在板上的小存储，bootloader 可升级）
+   - EEPROM 里第一阶段 <code>bootcode.bin</code> 被加载执行
+3. Boot ROM/EEPROM 阶段：初始化 SDRAM（训练内存时序），点亮 SD 卡接口</p>
+<p><strong>无源码</strong>：Boot ROM 是芯片制造时掩膜的；EEPROM 里的 bootloader 是树莓派基金会的闭源固件。</p>
+<blockquote>
+<p>x86 对照：x86 是 CPU 自己从 0xFFFFFFF0 取第一条指令；
+树莓派是 <strong>GPU 先当 CPU 用</strong>，把系统带到能读 SD 卡的程度，再叫醒 ARM 核。</p>
+</blockquote>
+<hr />
+<h2 id="arm-sec-2">第 1 站：树莓派 GPU 固件三段链（闭源，但行为透明）</h2>
+<pre><code>bootcode.bin(SPI EEPROM) 
+   → start4.elf        ← GPU固件主体, 从SD卡第一个FAT32分区根目录读取
+   → fixup4.dat        ← 内核/GPU内存划分表(arm_mem/gpu_mem参数的载体)
+   → config.txt        ← ★ 你的&quot;BIOS设置页&quot;: 明文配置,改了立即生效
+</code></pre>
+<p><strong>这一站没有源码，但有完整文档</strong>（树莓派官方 firmware 文档），行为完全透明：</p>
+<p><code>config.txt</code>（你以后裁剪/定制树莓派系统第一个要碰的文件）关键条目：</p>
+<pre><code>arm_64bit=1              # 加载64位内核(kernel8.img)
+kernel=kernel8.img       # 内核文件名(不设就按规则找:8→7→img)
+device_tree_address=0x1f00000   # dtb 放的内存地址
+initramfs followkernel   # initramfs 跟在内核后面
+enable_uart=1            # 打开串口(无屏调试神器,相当于x86的console=ttyS0)
+dtparam=audio=on         # 设备树覆盖参数(改硬件描述!)
+</code></pre>
+<p>GPU 固件干完的事（相当于 x86 里 BIOS+GRUB 的合体）：
+1. 读 <code>config.txt</code> + <code>cmdline.txt</code>（内核命令行，相当于 grub.cfg 的 linux 行参数）
+2. 从 FAT32 分区加载 <code>kernel8.img</code> 到内存（<strong>arm64 内核不压缩</strong>——这是与 x86 的一大差别，见下文）
+3. 加载 <code>bcm2711-rpi-4-b.dtb</code>（设备树）到 <code>device_tree_address</code>
+4. 把 dtb 指针放进 <strong>x0 寄存器</strong>、内核入口地址放进 PC，唤醒 ARM 核心</p>
+<blockquote>
+<p><strong>为什么 arm64 内核 Image 不压缩（不像 x86 的 bzImage）</strong>？
+ARM64 Boot Protocol 的设计哲学：解压由引导器负责（U-Boot 有 gzip 支持）；
+内核 Image 保持"可执行+自描述"，64 字节头既是数据又是代码（见第 3 站）——
+没有 x86 那种"解压器住在内核里"的奇技淫巧，分工更干净。</p>
+</blockquote>
+<hr />
+<h2 id="arm-sec-3">第 2 站：U-Boot 的一生（开源重点站）</h2>
+<p>树莓派官方镜像里 GPU 固件直接跳内核；但<strong>通用 ARM 板</strong>和"想要更多控制"的场景用 U-Boot
+（你自己交叉编译 ARM 内核做自制系统时，U-Boot 是最标准的引导器）。
+文件：<code>~/workspace/boot-code-reading/u-boot-2025.10/</code></p>
+<p>U-Boot 自己也分两段（因为 DDR 内存初始化前代码只能在 SRAM 里跑）：</p>
+<pre><code>SPL(Secondary Program Loader, ~几十KB) → 初始化DDR → 加载U-Boot主体(几百KB)
+</code></pre>
+<h3>2.1 crt0_64.S —— U-Boot 的 _main（进入 C 世界的仪式）</h3>
+<p><strong>文件：<code>u-boot-2025.10/arch/arm/lib/crt0_64.S</code></strong></p>
+<p>这个文件开头的注释就是 U-Boot 启动哲学的完整自白（节选）：</p>
+<pre><code>/*
+ * 1. Set up initial C runtime environment ...
+ *    This environment only provides a stack and a place to store
+ *    the GD ('global data') structure, both located in some readily
+ *    available RAM (SRAM, locked cache...). In this context, VARIABLE
+ *    global data, initialized or not (BSS), are UNAVAILABLE; only
+ *    CONSTANT initialized data are available. GD should be zeroed
+ *    before board_init_f() is called.
+ *
+ * 2. Call board_init_f(). This function prepares the hardware for
+ *    execution from system RAM (DRAM, DDR...) As system RAM may not
+ *    be available yet, board_init_f() must use the current GD to
+ *    store any data which must be passed on to later stages. These
+ *    data include the relocation destination, the future stack, and
+ *    the future GD location.
+ *
+ * 4a. For U-Boot proper (not SPL), call relocate_code(). This function
+ *    relocates U-Boot from its current location into the relocation
+ *    destination computed by board_init_f().
+ *
+ * 7. Branch to board_init_r().
+ */
+</code></pre>
+<p><strong>解读</strong>——U-Boot 的七步舞，本质是"在内存荒漠里逐步搭绿洲"：
+1. 只有 SRAM/锁定的 cache 当"内存"（几 KB 级），全局变量都放不了 → 先攒一个 <code>GD</code>（global data）结构存家当
+2. <code>board_init_f</code>：初始化 DDR（这段是每块板最硬的部分，时序参数来自设备树）
+3-4. <strong>把自己搬到 DDR 高地址</strong>（relocate：闪存/SRAM 里挤着住 → 搬进大房子）
+5-7. 在 DDR 里重建栈/全局变量，进 <code>board_init_r</code> 永驻</p>
+<pre><code class="language-asm">ENTRY(_main)
+#if CONFIG_IS_ENABLED(HAVE_INIT_STACK)
+        ldr     x0, =CONFIG_VAL(STACK)         // 栈先落在 SRAM 固定地址
+#else
+        adrp    x0, __bss_start                // 或 BSS 起点相对寻址(位置无关)
+        add     x0, x0, #:lo12:__bss_start
+#endif
+        ...
+        bl      board_init_f                    // ← 第一棒: 初始化 DDR, 算搬家地址
+</code></pre>
+<h3>2.2 board_r.c —— init_sequence_r 接力表（U-Boot 的"总装配流水线"）</h3>
+<p><strong>文件：<code>u-boot-2025.10/common/board_r.c</code></strong></p>
+<p>和内核 <code>start_kernel()</code> 同一个设计思想——一张初始化函数表按序执行：</p>
+<pre><code class="language-c">static init_fnc_t init_sequence_r[] = {
+        initr_trace,              /* 跟踪初始化 */
+        initr_reloc,              /* 告诉系统&quot;我已搬家完成&quot; */
+        initr_caches,             /* 打开 I/D cache */
+        initr_malloc,             /* 堆管理器上线(从此可用 malloc!) */
+        initr_dm,                 /* 设备模型(Driver Model)——U-Boot 自己的驱动框架 */
+        initr_dm_devices,         /* 枚举设备( mmc/usb/eth ... ) */
+        initr_mmc,                /* ← SD 卡驱动在这站起来! */
+        initr_env,                /* 环境变量(bootcmd 就存这) */
+        initr_console,            /* 串口控制台(U-Boot shell 的输出通道) */
+        ...
+        run_main_loop,            /* ← 进 U-Boot 命令行/自动启动 */
+};
+</code></pre>
+<p>到 <code>run_main_loop</code> 时，屏幕上出现那行著名提示（树莓派串口里见过）：</p>
+<pre><code>U-Boot 2025.10 (...)
+Hit any key to stop autoboot: 2  ← 2秒内按键进U-Boot shell
+</code></pre>
+<h3>2.3 bootcmd —— U-Boot 自动启动内核（相当于 GRUB 的 grub.cfg）</h3>
+<p>不按键则执行环境变量 <code>bootcmd</code>（标准发行版通常走 <code>extlinux</code>/<code>bootefi</code>）：</p>
+<pre><code># U-Boot shell 里查看(你的系统也能看到):
+=&gt; printenv bootcmd
+bootcmd=... load mmc 0:1 ${kernel_addr_r} kernel8.img
+          load mmc 0:1 ${fdt_addr_r} bcm2711-rpi-4-b.dtb
+          booti ${kernel_addr_r} - ${fdt_addr_r}    ← booti=arm64专用&quot;启动Image&quot;命令
+</code></pre>
+<p><code>booti</code> → <code>cmd/bootm.c</code> → <strong><code>arch/arm/lib/bootm.c: do_bootm_linux()</code></strong> → 最终跳转：</p>
+<h3>2.4 boot_jump_linux() —— U-Boot 的最后一跳（原文+注释）</h3>
+<p><strong>文件：<code>u-boot-2025.10/arch/arm/lib/bootm.c</code> 第 286 行</strong></p>
+<pre><code class="language-c">static void boot_jump_linux(struct bootm_headers *images, int flag)
+{
+#ifdef CONFIG_ARM64
+        /* 函数指针: 签名就是 ARM64 Boot Protocol 的寄存器约定!
+           void kernel_entry(fdt_addr, res0, res1, res2)
+           —— 第一个参数 = 设备树地址(它将成为内核的 x0) */
+        void (*kernel_entry)(void *fdt_addr, void *res0, void *res1,
+                             void *res2);
+        int fake = (flag &amp; BOOTM_STATE_OS_FAKE_GO);
+
+        kernel_entry = (void (*)(void *fdt_addr, void *res0, void *res1,
+                                void *res2))images-&gt;ep;   // ep = 内核入口(Image头算出的地址)
+
+        debug(&quot;## Transferring control to Linux (at address %lx)...\n&quot;,
+              (ulong) kernel_entry);
+        bootstage_mark(BOOTSTAGE_ID_RUN_OS);
+
+        announce_and_cleanup(fake);    // 打印&quot;Starting kernel...&quot; + 关闭U-Boot自己的驱动/串口
+                                       // (内核期望一个&quot;干净&quot;的机器, U-Boot全身而退)
+
+        if (!fake) {
+#ifdef CONFIG_ARMV8_PSCI
+                armv8_setup_psci();    // 配置PSCI(CPU电源管理接口,内核 SMP 启动要用)
+#endif
+                do_nonsec_virt_switch();  // ★ 安全世界切换: EL3/安全态 → EL2/非安全态
+                                          //   ARM特有: 异常等级(exception level)机制
+
+                update_os_arch_secondary_cores(images-&gt;os.arch);
+
+                /* 真正的跳转:
+                   x0 = fdt_addr(设备树)
+                   PC = kernel_entry
+                   —— U-Boot 使命终结 */
+                kernel_entry(images-&gt;ft_addr, 0, 0, 0);
+        }
+#endif
+...
+}
+</code></pre>
+<p><strong>U-Boot 一生总结</strong>：从 SRAM 里 30KB 的 SPL 起家 → 初始化 DDR → 搬家 →
+驱动框架起来认 SD 卡/网卡 → 扫描文件系统找到 Image+dtb → 按 Boot Protocol 摆好内存
+→ 退出时清理自己 → 把 dtb 地址放 x0 跳内核。比 GRUB 干的活多得多
+（GRUB 站在 BIOS 肩膀上，U-Boot 从"裸芯片"开始）。</p>
+<blockquote>
+<p><strong>通用 ARM 服务器路线补充</strong>：实际服务器/手机的链条比树莓派多一层——
+Boot ROM → <strong>ATF（ARM Trusted Firmware，开源！github.com/ARM-software/arm-trusted-firmware）</strong>
+→ U-Boot → 内核。ATF 管安全世界(EL3)和 TrustZone，是 ARM 的"BIOS 安全层"。
+树莓派简化掉了 ATF，直接 U-Boot/固件→内核。</p>
+</blockquote>
+<hr />
+<h2 id="arm-sec-4">第 3 站：Linux arm64 内核入口（head.S 精读）</h2>
+<p>文件：<code>~/workspace/kernel-build/src/linux-7.3/arch/arm64/kernel/head.S</code></p>
+<h3>3.1 _head —— 64 字节 Image 头（数据即代码！）</h3>
+<p><strong>head.S 第 59 行起（原文+注释）</strong>：</p>
+<pre><code class="language-asm">        __HEAD
+        /*
+         * DO NOT MODIFY. Image header expected by Linux boot-loaders.
+         */
+        efi_signature_nop       // 【8字节特殊NOP】让这个文件看起来是PE/COFF格式!
+                                // ——&quot;魔法&quot;: UEFI固件直接把这文件当.efi执行(EFI Stub),
+                                //    先走efi_stub_entry做EFI初始化,完成后跳回正常流程
+        b   primary_entry       // 【可执行指令!】普通引导器(U-Boot/GPU固件)直接跳到这,
+                                //    一条b指令进入 primary_entry
+        .quad   0               // text_offset: 内核在RAM中的装载偏移(0=按协议就近放)
+        le64sym _kernel_size_le // 内核有效大小(引导器据此预留内存)
+        le64sym _kernel_flags_le// 标志位(大小端/页大小/物理基址偏好)
+        .quad   0               // reserved ×3
+        .quad   0
+        .quad   0
+        .ascii  ARM64_IMAGE_MAGIC  // ★ 魔数 0x644d5241 = &quot;ARM\x64&quot; (U-Boot校验的就是它)
+        .long   .Lpe_header_offset // PE头偏移(EFI路线用)
+
+        __EFI_PE_HEADER             // PE/COFF 结构(EFI世界认的部分)
+</code></pre>
+<p><strong>这是全链条最优雅的设计</strong>——arm64 内核 Image 的前 64 字节<strong>同时是三种东西</strong>：
+1. <strong>数据表</strong>（text_offset/size/flags——U-Boot 读它布局内存）
+2. <strong>代码</strong>（<code>b primary_entry</code>——直接可执行）
+3. <strong>PE/COFF 可执行文件头</strong>（UEFI 固件把它当 .efi 直接加载执行！）</p>
+<p>一个文件三种身份 = 不需要单独的引导扇区/解压器——对比 x86 bzImage 的三段结构
+（setup区+解压器+压缩球），arm64 用 64 字节头+不压缩 Image 达成了同样的自举。
+协议文档 <code>Documentation/arch/arm64/booting.rst</code>（前面已全文展示 64 字节字段表）。</p>
+<h3>3.2 primary_entry —— CPU 进入内核的第一批指令</h3>
+<p><strong>head.S 第 85 行（原文+注释）</strong>：</p>
+<pre><code class="language-asm">/*
+ * 寄存器约定(注释原文):
+ *   x19  primary_entry() .. start_kernel()   启动时MMU是否已开
+ *   x20  primary_entry() .. __primary_switch()  CPU启动模式
+ *   x21  primary_entry() .. start_kernel()   ★ FDT(设备树)指针,引导器放在x0传进来
+ */
+SYM_CODE_START(primary_entry)
+        bl  record_mmu_state        // 记录&quot;进来时MMU是开是关&quot;(ARM允许带MMU进内核!)
+
+        bl  preserve_boot_args      // ★ 把 x0..x3(引导器传的4个参数)存进 boot_args 数组
+                                    //   x0=FDT指针 → 存为 x21, 后面 start_kernel 要用!
+
+        adrp    x1, early_init_stack
+        mov     sp, x1              // 设初期栈
+        mov     x29, xzr            // 清帧指针
+        adrp    x0, __pi_init_idmap_pg_dir
+        mov     x1, xzr
+        bl  __pi_create_init_idmap  // ★ 手工建&quot;恒等映射页表&quot;(物理地址=虚拟地址)
+                                    //   ——开MMU前的必要准备(ARM开MMU必须先有页表,
+                                    //      而建页表代码本身又要在MMU关时能跑:自举)
+
+        /* MMU 关着建的页表, 先清缓存保证一致性 */
+        dmb     sy
+        ...
+0:      adrp    x0, __idmap_text_start
+        ...
+        bl  __cpu_setup             // 初始化处理器(SCTLR等系统寄存器)
+        b   __primary_switch        // → 切换!
+</code></pre>
+<p><strong>preserve_boot_args 原文</strong>（head.S:170，引导参数交接的现场）：</p>
+<pre><code class="language-asm">SYM_CODE_START_LOCAL(preserve_boot_args)
+        mov     x21, x0             // x21 = FDT(设备树)——x86是ESI传参数块,ARM是x0传DTB
+
+        adr_l   x0, boot_args       // 把 x0..x3 四个寄存器完整存进 boot_args 数组
+        stp     x21, x1, [x0]       // (调试时能打印&quot;引导器到底传了什么&quot;)
+        stp     x2, x3, [x0, #16]
+
+        dmb     sy                  // 屏障(内存序)
+        ...
+        ret
+SYM_CODE_END(preserve_boot_args)
+</code></pre>
+<h3>3.3 __primary_switch —— 点火开 MMU</h3>
+<p><strong>head.S 第 508 行（原文+注释）</strong>：</p>
+<pre><code class="language-asm">SYM_FUNC_START_LOCAL(__primary_switch)
+        adrp    x1, reserved_pg_dir
+        adrp    x2, __pi_init_idmap_pg_dir
+        bl  __enable_mmu             // ★★ 点火! SCTLR_EL1.M=1, MMU正式开启
+                                     //    此后 CPU 看到的是虚拟地址世界
+                                     //    (x86对应物: head_64.S里 movl %eax,%cr0 置PE位)
+
+        adrp    x1, early_init_stack
+        mov     sp, x1
+        mov     x29, xzr
+        mov     x0, x20              // 传启动模式
+        mov     x1, x21              // 传FDT指针
+        bl  __pi_early_map_kernel    // 把内核映射到最终的虚拟地址位置(重定位/KASLR)
+
+        ldr     x8, =__primary_switched
+        adrp    x0, KERNEL_START     // 内核物理基址
+        br  x8                       // → __primary_switched
+SYM_FUNC_END(__primary_switch)
+</code></pre>
+<h3>3.4 __primary_switched —— 通往 start_kernel 的最后一段</h3>
+<p><strong>head.S 第 220 行（原文+注释）</strong>：</p>
+<pre><code class="language-asm">SYM_FUNC_START_LOCAL(__primary_switched)
+        adr_l   x4, init_task        // 0号进程(和x86的init_task同一个!)
+        init_cpu_task x4, x5, x6     // 设当前任务栈(switch到正式内核栈)
+
+        adr_l   x8, vectors
+        msr     vbar_el1, x8         // 装异常向量表(ARM版的IDT)
+        isb
+
+        stp     x29, x30, [sp, #-16]!
+        mov     x29, sp
+
+        str_l   x21, __fdt_pointer, x5   // ★ 全局保存FDT指针——之后所有代码
+                                          //   靠它找到设备树(硬件说明书)
+
+        adrp    x4, _text
+        sub     x4, x4, x0
+        str_l   x4, kimage_voffset, x5   // 记下 虚拟地址-物理地址 偏移(ARM64的
+                                          //   linear mapping需要)
+
+        bl  set_cpu_boot_mode_flag
+#if defined(CONFIG_KASAN_...)
+        bl  kasan_early_init
+#endif
+        bl  finalise_el2             // ★ ARM特有: 尽量留在EL2(Virtualization Host
+                                     //   Extension)——内核当hypervisor跑,虚拟化免切换
+        ldp     x29, x30, [sp], #16
+        bl  start_kernel             // ★★ 进入 start_kernel!从此与x86合流
+        ASM_BUG()
+SYM_FUNC_END(__primary_switched)
+</code></pre>
+<hr />
+<h2 id="arm-sec-5">第 4 站：start_kernel 之后（与 x86 汇合）</h2>
+<p><code>start_kernel()</code> 之后的所有代码<strong>与 x86 完全共享</strong>（同一个函数！<code>init/main.c:1002</code>）：</p>
+<pre><code>共用: start_kernel → sched_init/mm_init/... → rest_init → kernel_init → systemd
+   │
+   └─ 架构差异只藏在三个&quot;钩子&quot;里:
+      • setup_arch()     x86版读ACPI/EBDA, arm64版读设备树(unflatten_device_tree
+                         把DTB解析成内核数据结构)
+      • 硬件驱动         设备树里每个节点被 platform 总线匹配到驱动
+      • 中断/定时器      GIC中断控制器(ARM) vs APIC(x86)——都藏在arch/下
+</code></pre>
+<p><strong>这是 Linux 内核工程的精髓</strong>：900 万行代码里 <code>arch/</code> 只占不到 10%，
+开机这种最底层的东西做到了"95% 共享 + 5% 插拔"。你今天 x86 之旅读过的
+<code>init/main.c</code>、<code>start_kernel</code>、<code>rest_init</code>，在树莓派上<strong>逐字节同样执行</strong>——
+这就是为什么先在 x86 上学内核完全不亏。</p>
+<hr />
+<h2 id="arm-sec-6">第 5 站：systemd（与 x86 相同）</h2>
+<p>PID 1 = systemd，同样拉起 getty 登录。唯一区别：树莓派官方镜像默认
+<code>systemd-boot</code> 之外还可能有 UART console（串口登录，无屏服务器场景）。</p>
+<hr />
+<h2 id="arm-sec-7">附录 A：ARM64 vs x86 全方位对比（开机链路 + 体系结构）</h2>
+<h3>A.1 开机链路对比（12 站逐环节）</h3>
+<table>
+<thead>
+<tr>
+<th>环节</th>
+<th>x86</th>
+<th>ARM64（树莓派/通用板）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>复位后第一条指令</td>
+<td>CPU 跳 0xFFFFFFF0（BIOS 闪存）</td>
+<td><strong>GPU/Boot ROM</strong> 执行（片内 ROM）</td>
+</tr>
+<tr>
+<td>固件初始化</td>
+<td>BIOS POST（SeaBIOS 可读）</td>
+<td>GPU 固件链 / Boot ROM + ATF（闭源+ATF开源）</td>
+</tr>
+<tr>
+<td>内存初始化</td>
+<td>BIOS 已做好（GRUB 查 E820）</td>
+<td><strong>引导器自己做</strong>（U-Boot board_init_f，最难的部分）</td>
+</tr>
+<tr>
+<td>引导器</td>
+<td>GRUB（站在 BIOS 肩上）</td>
+<td>U-Boot（从裸芯片开始，含 SPL 两段式）</td>
+</tr>
+<tr>
+<td>引导配置</td>
+<td>grub.cfg（GRUB 自有格式）</td>
+<td>config.txt + cmdline.txt（FAT 明文）/ extlinux.conf</td>
+</tr>
+<tr>
+<td>设备描述</td>
+<td>ACPI 表</td>
+<td><strong>设备树 DTB</strong>（独立数据文件，可读可改）</td>
+</tr>
+<tr>
+<td>内核形态</td>
+<td>bzImage：setup+解压器+压缩球 三段</td>
+<td><strong>Image 不压缩</strong>：64 字节头即数据即代码</td>
+</tr>
+<tr>
+<td>内核↔引导协议</td>
+<td>Linux Boot Protocol（HdrS 魔数）</td>
+<td><strong>ARM64 Boot Protocol</strong>（"ARM\x64" 魔数 + x0=dtb）</td>
+</tr>
+<tr>
+<td>内核入口跳转参数</td>
+<td>ESI=参数块地址</td>
+<td><strong>x0=设备树指针</strong></td>
+</tr>
+<tr>
+<td>开 MMU/保护模式</td>
+<td>head_64.S 置 CR0.PE</td>
+<td>__primary_switch 开 SCTLR.M</td>
+</tr>
+<tr>
+<td>0号进程/1号进程</td>
+<td>init_task / kernel_init</td>
+<td><strong>同名同函数</strong>（arch 无关代码）</td>
+</tr>
+<tr>
+<td>start_kernel 之后</td>
+<td>—</td>
+<td><strong>100% 相同</strong></td>
+</tr>
+</tbody>
+</table>
+<h3>A.2 指令集与寄存器对比（读代码时速查）</h3>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>x86</th>
+<th>ARM64</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>通用寄存器</td>
+<td>16 个（RAX/RBX/RCX/RDX/RSI/RDI/R8-R15）</td>
+<td>31 个（X0-X30，X31=SPZR）</td>
+</tr>
+<tr>
+<td>栈指针</td>
+<td>RSP 专用</td>
+<td>SP（X31 的别名用法）</td>
+</tr>
+<tr>
+<td>函数传参</td>
+<td>RDI/RSI/RDX/RCX/R8/R9（System V ABI）</td>
+<td><strong>X0-X7</strong>（所以"dtb 在 x0"是约定第一参数）</td>
+</tr>
+<tr>
+<td>返回值</td>
+<td>RAX</td>
+<td>X0</td>
+</tr>
+<tr>
+<td>链接寄存器</td>
+<td>—（返回地址压栈）</td>
+<td><strong>LR=X30</strong>（返回地址存寄存器, bl 指令自动填）</td>
+</tr>
+<tr>
+<td>取指针技巧</td>
+<td><code>lea rax, [rip+X]</code>（RIP 相对寻址）</td>
+<td><code>adrp x0, X</code> + <code>add x0, x0, #:lo12:X</code>（4KB页对齐两步走）</td>
+</tr>
+<tr>
+<td>16位实模式</td>
+<td>有（BIOS 时代遗产，boot.S 用的）</td>
+<td><strong>无</strong>（ARM 从第一天就是干净的 32/64 位）</td>
+</tr>
+<tr>
+<td>指令定长</td>
+<td>否（1-15 字节变长）</td>
+<td><strong>是</strong>（一律 4 字节——解码简单,反汇编好读）</td>
+</tr>
+</tbody>
+</table>
+<h3>A.3 开机汇编代码风格对比（同款任务两写法）</h3>
+<p><strong>x86（grub boot.S，16 位实模式）：</strong></p>
+<pre><code class="language-asm">        .code16                    // 还要声明&quot;这是16位代码&quot;
+        cli
+        xorw %ax, %ax              // AT&amp;T 语法: 寄存器带%前缀, 操作数方向 反
+        movw %ax, %ds              // 16位指令带w后缀
+        ljmp $0, $real_start       // 段:偏移 远跳转(实模式特有)
+</code></pre>
+<p><strong>ARM64（内核 head.S）：</strong></p>
+<pre><code class="language-asm">        bl  record_mmu_state       // 一条指令=调用+存返回地址到LR, 干净
+        adrp x1, early_init_stack  // 取符号地址(页对齐), ARM64标准姿势
+        mov sp, x1                 // 无前缀无后缀, 操作数方向 直观
+        b   __primary_switch       // 无条件跳(b) vs 带_LR的调用(bl)
+</code></pre>
+<h3>A.4 内存与安全机制对比</h3>
+<table>
+<thead>
+<tr>
+<th>项</th>
+<th>x86-64</th>
+<th>ARM64</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>分页模式</td>
+<td>4级/5级页表（CR4.LA57）</td>
+<td>3级/4级（页大小可选 <strong>4K/16K/64K</strong>，Image 头 flags 申明）</td>
+</tr>
+<tr>
+<td>特权级</td>
+<td>Ring 0-3（实际用 0 和 3）</td>
+<td><strong>EL0-EL3</strong>（异常等级:EL0用户/EL1内核/EL2虚拟化/EL3安全监控）</td>
+</tr>
+<tr>
+<td>虚拟化</td>
+<td>VT-x（EPT 二级地址翻译）</td>
+<td>EL2（内核可直接住 EL2 = VHE，finalise_el2 的选择）</td>
+</tr>
+<tr>
+<td>可信执行</td>
+<td>TPM 外挂模块</td>
+<td><strong>TrustZone</strong>（硬件隔离安全/非安全世界，ATF 把守 EL3）</td>
+</tr>
+<tr>
+<td>入口一致性</td>
+<td>引导器只需管好自己跳走</td>
+<td>同左+ 可选经 ATF 安全世界切换（do_nonsec_virt_switch）</td>
+</tr>
+</tbody>
+</table>
+<h3>A.5 一表流：两个世界的哲学差异</h3>
+<table>
+<thead>
+<tr>
+<th>哲学维度</th>
+<th>x86</th>
+<th>ARM</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>血统</td>
+<td>40 年向后兼容（8086→…→x86-64），每一代背着所有祖先的包袱</td>
+<td>定期推倒重来（ARMv7→v8 丢弃 26位模式等），包袱少</td>
+</tr>
+<tr>
+<td>引导思想</td>
+<td>"约定最小化"（512字节+魔数,能力逐跳升级）</td>
+<td>"数据即代码"（64字节头三重身份,文件自描述）</td>
+</tr>
+<tr>
+<td>硬件描述</td>
+<td>ACPI（固件生成,启动时才可见）</td>
+<td><strong>设备树</strong>（独立源文件 dts,编译期可见可 diff 可改）</td>
+</tr>
+<tr>
+<td>生态风格</td>
+<td>一家厂商(Intel/AMD)定标准</td>
+<td>IP 授权模式(ARM定架构,高通/苹果/博通各自实现)</td>
+</tr>
+<tr>
+<td>读码体验</td>
+<td>汇编变长+历史分支多,烧脑</td>
+<td>定长4字节+LR寄存器,<strong>新手汇编友好得多</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>学内核建议</strong>（顺带）：ARM64 汇编比 x86 汇编好读得多——
+指令定长、传参即 X0-X7、没有 16 位实模式的历史包袱。
+先读 ARM64 的 head.S 建立"开机汇编"直觉，再回头看 x86 的 boot.S
+会觉得"原来那些别扭都是历史包袱"，而不是"汇编本来就难"。</p>
+</blockquote>
+<h2 id="arm-sec-8">附录 B：ARM64 Boot Protocol 字段表（Image 头 64 字节）</h2>
+<table>
+<thead>
+<tr>
+<th>偏移</th>
+<th>字段</th>
+<th>谁读</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>code0（NOP+<code>b primary_entry</code>）</td>
+<td>全部</td>
+<td>可执行；UEFI 当 PE 头认</td>
+</tr>
+<tr>
+<td>8</td>
+<td>code1</td>
+<td>—</td>
+<td>保留</td>
+</tr>
+<tr>
+<td>16</td>
+<td>text_offset</td>
+<td>引导器</td>
+<td>内核期望的装载偏移</td>
+</tr>
+<tr>
+<td>24</td>
+<td>image_size</td>
+<td>引导器</td>
+<td>预留内存大小</td>
+</tr>
+<tr>
+<td>32</td>
+<td>flags</td>
+<td>引导器</td>
+<td>大小端/页大小(4K/16K/64K)/物理基址策略</td>
+</tr>
+<tr>
+<td>40-56</td>
+<td>res2/3/4</td>
+<td>—</td>
+<td>保留 0</td>
+</tr>
+<tr>
+<td>60</td>
+<td>magic 0x644d5241</td>
+<td>引导器</td>
+<td><strong>"ARM\x64" 校验</strong>（U-Boot 的暗号）</td>
+</tr>
+<tr>
+<td>63</td>
+<td>res5=PE offset</td>
+<td>UEFI</td>
+<td>EFI Stub 入口</td>
+</tr>
+</tbody>
+</table>
+<p>引导器必须做（booting.rst 原文）：初始化 RAM → 放好 DTB（8字节对齐,≤2MB）→ 解压（若压缩）→ x0=dtb, x1..x3=0, PC=Image 入口。</p>
+<h2 id="arm-sec-9">附录 C：树莓派 config.txt 对照 grub.cfg</h2>
+<table>
+<thead>
+<tr>
+<th>用途</th>
+<th>x86 (grub.cfg)</th>
+<th>树莓派 (config.txt+cmdline.txt)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>换内核</td>
+<td><code>linux /boot/vmlinuz-xxx</code></td>
+<td><code>kernel=kernel8.img</code>（或直接改文件名）</td>
+</tr>
+<tr>
+<td>内核参数</td>
+<td>同一行 root=...</td>
+<td>cmdline.txt（整文件就是一行参数）</td>
+</tr>
+<tr>
+<td>指定根分区</td>
+<td><code>root=UUID=...</code></td>
+<td><code>root=/dev/mmcblk0p2</code>（cmdline.txt 里）</td>
+</tr>
+<tr>
+<td>串口控制台</td>
+<td><code>console=ttyS0</code></td>
+<td>同款写法 + config.txt <code>enable_uart=1</code></td>
+</tr>
+<tr>
+<td>传设备树</td>
+<td>（x86 无 DTB，用 ACPI）</td>
+<td><code>device_tree_address=</code> / <code>dtoverlay=</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="arm-sec-10">附录 D：qemu 模拟 ARM 实验（不买板子也能走这条链）</h2>
+<pre><code class="language-bash"># 模拟一台通用 ARM64 虚机(qemu 的 virt 机型), U-Boot→内核:
+qemu-system-aarch64 -M virt -cpu cortex-a72 -m 1G -nographic \
+  -kernel ~/workspace/kernel-build/src/linux-7.3/arch/arm64/boot/Image \
+  -bios u-boot.bin \
+  -append &quot;console=ttyAMA0&quot;
+# 屏幕输出对应: &quot;U-Boot 2025.10&quot;→board_r.c / &quot;Starting kernel...&quot;→bootm.c /
+#              内核滚日志→head.S→start_kernel
+
+# 亲手编一版 arm64 内核(源码已在手,只是加个交叉工具链):
+#   sudo apt install gcc-aarch64-linux-gnu
+#   make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+#   make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j8
+#   产物: arch/arm64/boot/Image  ← 就能进上面 qemu 跑
+</code></pre>
+<h2 id="arm-sec-11">附录 E：阅读路线（半天量）</h2>
+<pre><code>1. 内核 Documentation/arch/arm64/booting.rst     15分钟  协议全文(不长,官方文档典范)
+2. 内核 arch/arm64/kernel/head.S: 59行起         20分钟  64字节头三重身份
+3. 内核 head.S: 85,170,508,220 行               45分钟  primary_entry→开MMU→start_kernel
+4. u-boot-2025.10/arch/arm/lib/crt0_64.S        20分钟  注释就是启动哲学
+5. u-boot common/board_r.c init_sequence_r       15分钟  接力表(对照start_kernel)
+6. u-boot arch/arm/lib/bootm.c: 286行           20分钟  最后一跳(x0=dtb)
+7. 对照读: bootm.c(引导器侧) vs head.S(内核侧)    ——和x86那对linux.c/header.S同款玩法
+</code></pre>
+<hr />
+<p><em>生成：2026-11-09 · 代码取自本地真实源码（U-Boot 2025.10 / Linux 7.3.0 arm64）</em>
+<em>配套 x86 版：<code>x86开机全链路代码详解.md</code>（建议两篇并排读，对照表在附录 A）</em></p>
+<div class="footer">生成于 2026-11-09 · 代码取自本地真实源码: U-Boot 2025.10 / Linux 7.3.0 arm64 · 配套 x86 版同目录</div>
+</body>
+</html>
