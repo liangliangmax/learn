@@ -2,23 +2,21 @@
 
   源码版本：Spring Boot 4.0.x  |  源码目录：/home/liang/workspace/spring-boot/core/spring-boot/
 
-  分析范围：从 `SpringApplication.run(Class, String...) 第一行到容器启动完成返回`
+  分析范围：从 `SpringApplication.run(Class, String...)` 第一行到容器启动完成返回
 
 >
   **图例：**
-  · 阶段/入口
-  · 核心步骤
-  · 子方法
-  · 更深层方法
-  · 细节实现
-  · 底层操作
-  · 事件发布
+   阶段/入口
+   核心步骤
+   子方法
+   更深层方法
+   细节实现
+   底层操作
+   事件发布
 
 ## 入口：静态 run 方法
 
-> **【阶段】**
-
-🚀
+### 🚀
 ### 调用链
 
 ```
@@ -30,136 +28,133 @@ SpringApplication.run(Class primarySource, String... args)           // L1353
               └─ [2] .run(args)                            → 启动阶段
 ```
 
-静态方法 `run(Class, String...) 只是包装，核心逻辑在实例方法 `run(String...) 中。
+静态方法 `run(Class, String...)` 只是包装，核心逻辑在实例方法 `run(String...)` 中。
 
 ## 阶段一：构造 SpringApplication 实例
 
-> **【阶段】**
+### 🏗️
+### SpringApplication(ResourceLoader, Class...)  ⟨L274-284⟩
 
-🏗️
-### SpringApplication(ResourceLoader, Class...)  L274-284
+**1.** `保存 primarySources` ⟨L277⟩
 
-**1.**`保存 primarySources L277`
+`this.primarySources = new LinkedHashSet<>(Arrays.asList(primarySources))`
 
-this.primarySources = new LinkedHashSet<>(Arrays.asList(primarySources))
+保存传入的主配置类（如 `MyApplication.class`），后续在 `getAllSources()` 中作为 BeanDefinition 的来源。
 
-保存传入的主配置类（如 MyApplication.class），后续在 `getAllSources() 中作为 BeanDefinition 的来源。`
-
-**2.**`WebApplicationType.deduce() L278 / WebApplicationType.java L63-71`
+**2.** `WebApplicationType.deduce()` ⟨L278 / WebApplicationType.java L63-71⟩
 
 推断 Web 应用类型（SERVLET / REACTIVE / NONE）：
 
-- 先查 META-INF/spring.factories 中的 WebApplicationType.Deducer 实现，有则调用 deduceWebApplicationType()
+- 先查 `META-INF/spring.factories` 中的 `WebApplicationType.Deducer` 实现，有则调用 `deduceWebApplicationType()`
 
-- 没有 Deducer → isServletApplication()：检查 classpath 是否同时存在 jakarta.servlet.Servlet 和 org.springframework.web.context.ConfigurableWebApplicationContext
+- 没有 Deducer → `isServletApplication()`：检查 classpath 是否同时存在 `jakarta.servlet.Servlet` 和 `org.springframework.web.context.ConfigurableWebApplicationContext`
 
 - 两个类都在 → **SERVLET**；否则 → **NONE**
 
-结果存入 this.properties.webApplicationType，后续决定创建哪种 ApplicationContext 和 Environment。
+结果存入 `this.properties.webApplicationType`，后续决定创建哪种 ApplicationContext 和 Environment。
 
-**3.**`getSpringFactoriesInstances(BootstrapRegistryInitializer.class) L279-280`
+**3.** `getSpringFactoriesInstances(BootstrapRegistryInitializer.class)` ⟨L279-280⟩
 
-通过 SpringFactoriesLoader.forDefaultResourceLocation().load(type) 从 META-INF/spring.factories 加载所有 BootstrapRegistryInitializer 实现。
+通过 `SpringFactoriesLoader.forDefaultResourceLocation().load(type)` 从 `META-INF/spring.factories` 加载所有 `BootstrapRegistryInitializer` 实现。
 
-这些初始化器将在 `createBootstrapContext() 中被调用，用于在 ApplicationContext 创建前注册早期实例。`
+这些初始化器将在 `createBootstrapContext()` 中被调用，用于在 ApplicationContext 创建前注册早期实例。
 
-**4.**`setInitializers(getSpringFactoriesInstances(ApplicationContextInitializer.class)) L281`
+**4.** `setInitializers(getSpringFactoriesInstances(ApplicationContextInitializer.class))` ⟨L281⟩
 
-同样从 spring.factories 加载，存入 this.initializers 列表。
+同样从 spring.factories 加载，存入 `this.initializers` 列表。
 
-这些初始化器将在 `prepareContext() 的 `applyInitializers() 中被遍历调用，对 ApplicationContext 做早期定制。
+这些初始化器将在 `prepareContext()` 的 `applyInitializers()` 中被遍历调用，对 ApplicationContext 做早期定制。
 
-**5.**`setListeners(getSpringFactoriesInstances(ApplicationListener.class)) L282`
+**5.** `setListeners(getSpringFactoriesInstances(ApplicationListener.class))` ⟨L282⟩
 
-从 spring.factories 加载所有 ApplicationListener 实现，存入 this.listeners 列表。
+从 spring.factories 加载所有 `ApplicationListener` 实现，存入 `this.listeners` 列表。
 
-这些监听器将在 `contextLoaded() 中被注册到 ApplicationContext，监听各种应用事件。`
+这些监听器将在 `contextLoaded()` 中被注册到 ApplicationContext，监听各种应用事件。
 
-**6.**`deduceMainApplicationClass() L283 / L286-296`
+**6.** `deduceMainApplicationClass()` ⟨L283 / L286-296⟩
 
-使用 StackWalker.getInstance(RETAIN_CLASS_REFERENCE) 遍历调用栈：
+使用 `StackWalker.getInstance(RETAIN_CLASS_REFERENCE)` 遍历调用栈：
 
-stack.filter(frame → "main".equals(frame.getMethodName())).findFirst().map(frame → frame.getDeclaringClass())
+`stack.filter(frame → "main".equals(frame.getMethodName())).findFirst().map(frame → frame.getDeclaringClass())`
 
-找到调用 main() 方法的类，存入 this.mainApplicationClass，用于日志输出和 Banner 显示。
+找到调用 `main()` 方法的类，存入 `this.mainApplicationClass`，用于日志输出和 Banner 显示。
 
-SpringFactoriesLoader 是 Spring Boot SPI 机制的核心：它从所有 jar 的 META-INF/spring.factories 文件中读取接口→实现类列表，反射实例化。构造阶段连续调了 3 次（BootstrapRegistryInitializer、ApplicationContextInitializer、ApplicationListener），把 Spring Boot 自动配置的"骨架"搭起来了。
+> **★ 要点**
+`SpringFactoriesLoader` 是 Spring Boot SPI 机制的核心：它从所有 jar 的 `META-INF/spring.factories` 文件中读取接口→实现类列表，反射实例化。构造阶段连续调了 3 次（BootstrapRegistryInitializer、ApplicationContextInitializer、ApplicationListener），把 Spring Boot 自动配置的"骨架"搭起来了。
 
 ## 阶段二：run(String... args) 核心启动流程
 
-方法位置：`SpringApplication.run(String... args) L304-342`
+方法位置：`SpringApplication.run(String... args)` ⟨L304-342⟩
 
 这是整个 Spring Boot 启动的核心方法，共 20 个步骤，分为 6 个阶段。
 
 ### 阶段 A：启动准备（步骤 1-6）
 
-> **【阶段】**
-
-**1.**`Startup.create() L305 / L1771-1776`
+**1.** `Startup.create()` ⟨L305 / L1771-1776⟩
 
 创建启动计时器：
 
-- 检查 classpath 是否有 jdk.crac.management.CRaCMXBean 和 org.crac.management.CRaCMXBean
+- 检查 classpath 是否有 `jdk.crac.management.CRaCMXBean` 和 `org.crac.management.CRaCMXBean`
 
-- 有 → CoordinatedRestoreAtCheckpointStartup（支持 CRaC 检查点恢复，startTime() 优先用 restoreTime）
+- 有 → `CoordinatedRestoreAtCheckpointStartup`（支持 CRaC 检查点恢复，`startTime()` 优先用 `restoreTime`）
 
-- 无 → StandardStartup（startTime = System.currentTimeMillis() 记录启动开始时间）
+- 无 → `StandardStartup`（`startTime = System.currentTimeMillis()` 记录启动开始时间）
 
-**2.**`shutdownHook.enableShutdownHookAddition() L306-308 / SpringApplicationShutdownHook.java L74-76`
+**2.** `shutdownHook.enableShutdownHookAddition()` ⟨L306-308 / SpringApplicationShutdownHook.java L74-76⟩
 
-ApplicationProperties.registerShutdownHook 默认 true。
+`ApplicationProperties.registerShutdownHook` 默认 `true`。
 
-此方法只设置 shutdownHookAdditionEnabled = true 标记，**并不立即注册** Runtime shutdownHook。
+此方法只设置 `shutdownHookAdditionEnabled = true` 标记，**并不立即注册** Runtime shutdownHook。
 
-真正的 Runtime.getRuntime().addShutdownHook() 延迟到 `refreshContext() 中的 `registerApplicationContext() 时执行。
+真正的 `Runtime.getRuntime().addShutdownHook()` 延迟到 `refreshContext()` 中的 `registerApplicationContext()` 时执行。
 
-**3.**`createBootstrapContext() L309 / L344-348`
+**3.** `createBootstrapContext()` ⟨L309 / L344-348⟩
 
-创建 DefaultBootstrapContext（引导上下文）：
+创建 `DefaultBootstrapContext`（引导上下文）：
 
-- new DefaultBootstrapContext() — 内部维护 Map<Class, InstanceSupplier> 和 Map<Class, Object>，以及一个 SimpleApplicationEventMulticaster
+- `new DefaultBootstrapContext()` — 内部维护 `Map<Class, InstanceSupplier>` 和 `Map<Class, Object>`，以及一个 `SimpleApplicationEventMulticaster`
 
-- 遍历所有 BootstrapRegistryInitializer，调用 initializer.initialize(bootstrapContext)
+- 遍历所有 `BootstrapRegistryInitializer`，调用 `initializer.initialize(bootstrapContext)`
 
-每个 initializer 可以通过 bootstrapContext.register(type, supplier) 注册类型→实例供应器
+每个 initializer 可以通过 `bootstrapContext.register(type, supplier)` 注册类型→实例供应器
 
-BootstrapContext 的作用：在 ApplicationContext 创建前，提供一个轻量级容器，存放配置文件加载器、早期 Bean 实例等。在 `prepareContext() 完成后通过 bootstrapContext.close(context) 关闭。`
+BootstrapContext 的作用：在 ApplicationContext 创建前，提供一个轻量级容器，存放配置文件加载器、早期 Bean 实例等。在 `prepareContext()` 完成后通过 `bootstrapContext.close(context)` 关闭。
 
-**4.**`configureHeadlessProperty() L311 / L448-451`
+**4.** `configureHeadlessProperty()` ⟨L311 / L448-451⟩
 
-System.setProperty("java.awt.headless", "true")
+`System.setProperty("java.awt.headless", "true")`
 
 设置无头模式，防止 AWT/Swing 弹窗（服务器环境不需要 GUI）。
 
-默认 this.headless = true，可通过 spring.main.headless=false 覆盖。
+默认 `this.headless = true`，可通过 `spring.main.headless=false` 覆盖。
 
-**5.**`getRunListeners(args) L312 / L453-465`
+**5.** `getRunListeners(args)` ⟨L312 / L453-465⟩
 
 获取运行监听器集合：
 
-- 构造 ArgumentResolver，绑定 SpringApplication.class → this 和 String[].class → args
+- 构造 `ArgumentResolver`，绑定 `SpringApplication.class → this` 和 `String[].class → args`
 
-- SpringFactoriesLoader.forDefaultResourceLocation().load(SpringApplicationRunListener.class, argumentResolver) — 从 spring.factories 加载
+- `SpringFactoriesLoader.forDefaultResourceLocation().load(SpringApplicationRunListener.class, argumentResolver)` — 从 spring.factories 加载
 
-- 检查 ThreadLocal<SpringApplicationHook> 是否有 hook，有则追加 hook 提供的 listener
+- 检查 `ThreadLocal<SpringApplicationHook>` 是否有 hook，有则追加 hook 提供的 listener
 
-- 包装成 SpringApplicationRunListeners（聚合器，内部 List<SpringApplicationRunListener>）
+- 包装成 `SpringApplicationRunListeners`（聚合器，内部 `List<SpringApplicationRunListener>`）
 
-核心实现是 EventPublishingRunListener（见下方详解），它将 RunListener 回调转换为 Spring ApplicationEvent 发布。
+**核心实现是 EventPublishingRunListener**（见下方详解），它将 RunListener 回调转换为 Spring ApplicationEvent 发布。
 
-**6.**`listeners.starting(bootstrapContext, mainApplicationClass) L313`
+**6.** `listeners.starting(bootstrapContext, mainApplicationClass)` ⟨L313⟩
 
 触发 starting 事件：
 
-SpringApplicationRunListeners.starting() (L55-62) → 遍历所有 listener 调用 listener.starting(bootstrapContext)
+`SpringApplicationRunListeners.starting()` (L55-62) → 遍历所有 listener 调用 `listener.starting(bootstrapContext)`
 
-`EventPublishingRunListener.starting() (L75-77)：`
+`EventPublishingRunListener.starting()` (L75-77)：
 
-  multicastInitialEvent(new ApplicationStartingEvent(bootstrapContext, this.application, this.args))
+  `multicastInitialEvent(new ApplicationStartingEvent(bootstrapContext, this.application, this.args))`
 
-  → refreshApplicationListeners() — 把 SpringApplication 的 listeners 加到 initialMulticaster
+  → `refreshApplicationListeners()` — 把 SpringApplication 的 listeners 加到 initialMulticaster
 
-  → initialMulticaster.multicastEvent(event) — 用 SimpleApplicationEventMulticaster 广播
+  → `initialMulticaster.multicastEvent(event)` — 用 `SimpleApplicationEventMulticaster` 广播
 
 ⚡ 发布事件：ApplicationStartingEvent
 
@@ -167,277 +162,271 @@ SpringApplicationRunListeners.starting() (L55-62) → 遍历所有 listener 调�
 
 ### 阶段 B：环境准备（步骤 7-8）
 
-> **【阶段】**
-
-**7.**`new DefaultApplicationArguments(args) L315 / DefaultApplicationArguments.java L42-46`
+**7.** `new DefaultApplicationArguments(args)` ⟨L315 / DefaultApplicationArguments.java L42-46⟩
 
 包装命令行参数：
 
-- this.source = new Source(args) — Source extends SimpleCommandLinePropertySource
+- `this.source = new Source(args)` — `Source extends SimpleCommandLinePropertySource`
 
-- 解析 --key=value 格式的参数为 option args，非 -- 开头的为 non-option args
+- 解析 `--key=value` 格式的参数为 option args，非 `--` 开头的为 non-option args
 
-- 提供 getOptionNames()、getOptionValues(name)、getNonOptionArgs() 等方法
+- 提供 `getOptionNames()`、`getOptionValues(name)`、`getNonOptionArgs()` 等方法
 
-后续注册为单例 Bean "springApplicationArguments"，供其他组件注入使用。
+后续注册为单例 Bean `"springApplicationArguments"`，供其他组件注入使用。
 
-**8.**`prepareEnvironment(listeners, bootstrapContext, applicationArguments) L316 / L350-368`
+**8.** `prepareEnvironment(listeners, bootstrapContext, applicationArguments)` ⟨L316 / L350-368⟩
 
 这是最复杂的方法之一，分 7 个子步骤：
 
 #### 8.1 getOrCreateEnvironment()
 
-L353 / L475-485
+⟨L353 / L475-485⟩
 
 根据 WebApplicationType 创建 Environment：
 
-- SERVLET → StandardServletEnvironment（通过 ApplicationContextFactory 从 spring.factories 查找）
+- SERVLET → `StandardServletEnvironment`（通过 ApplicationContextFactory 从 spring.factories 查找）
 
-- NONE → ApplicationEnvironment（继承 StandardEnvironment，重写 createPropertyResolver() 使用 ConfigurationPropertySources）
+- NONE → `ApplicationEnvironment`（继承 StandardEnvironment，重写 `createPropertyResolver()` 使用 ConfigurationPropertySources）
 
 Environment 内部初始 PropertySources 顺序：
 
-systemProperties → systemEnvironment → applicationInfo（后续会插入更多）
+`systemProperties` → `systemEnvironment` → `applicationInfo`（后续会插入更多）
 
 #### 8.2 configureEnvironment(environment, args)
 
-L354 / L498-504
+⟨L354 / L498-504⟩
 
-- **setConversionService** — new ApplicationConversionService()，注册 Spring Boot 自定义的类型转换器（String→Duration、String→DataSize 等）
+- **setConversionService** — `new ApplicationConversionService()`，注册 Spring Boot 自定义的类型转换器（String→Duration、String→DataSize 等）
 
-- **configurePropertySources()** L513-533：
+- **configurePropertySources()** ⟨L513-533⟩：
 
-- 如果有 defaultProperties → DefaultPropertiesPropertySource.addOrMerge() 放到最后
+- 如果有 `defaultProperties` → `DefaultPropertiesPropertySource.addOrMerge()` 放到最后
 
-- 如果有命令行参数 → 包装为 SimpleCommandLinePropertySource 放到**最前**（优先级最高）
+- 如果有命令行参数 → 包装为 `SimpleCommandLinePropertySource` 放到**最前**（优先级最高）
 
-- 添加 ApplicationInfoPropertySource（包含 PID 和应用版本号）到最后
+- 添加 `ApplicationInfoPropertySource`（包含 PID 和应用版本号）到最后
 
-- **configureProfiles()** L543-544：空实现，profile 由后续配置文件加载时处理
+- **configureProfiles()** ⟨L543-544⟩：空实现，profile 由后续配置文件加载时处理
 
 #### 8.3 ConfigurationPropertySources.attach(environment)
 
-L355
+⟨L355⟩
 
-把 Environment 的 PropertySources 包装成 ConfigurationPropertySourcesPropertySource，名为 "configurationProperties"，加到 PropertySources 中。
+把 Environment 的 PropertySources 包装成 `ConfigurationPropertySourcesPropertySource`，名为 `"configurationProperties"`，加到 PropertySources 中。
 
-这使得 Spring Boot 的 Binder 能通过 spring.main.xxx 等前缀绑定属性。
+这使得 Spring Boot 的 `Binder` 能通过 `spring.main.xxx` 等前缀绑定属性。
 
 #### 8.4 listeners.environmentPrepared(bootstrapContext, environment)
 
-L356
+⟨L356⟩
 
 ⚡ 发布事件：ApplicationEnvironmentPreparedEvent
 
-通过 EventPublishingRunListener (L80-84) → initialMulticaster.multicastEvent(new ApplicationEnvironmentPreparedEvent(...))
+通过 EventPublishingRunListener (L80-84) → `initialMulticaster.multicastEvent(new ApplicationEnvironmentPreparedEvent(...))`
 
 **这是最关键的事件之一**，触发的监听器包括：
 
-- ConfigDataEnvironmentPostProcessor — 加载 application.yml / application.properties / application-profile.yml，以及 spring.config.import 指定的额外配置
+- `ConfigDataEnvironmentPostProcessor` — 加载 `application.yml` / `application.properties` / `application-profile.yml`，以及 `spring.config.import` 指定的额外配置
 
-- LoggingApplicationListener — 初始化日志系统（Logback/Log4j2）
+- `LoggingApplicationListener` — 初始化日志系统（Logback/Log4j2）
 
-- 各种 EnvironmentPostProcessor — 对 Environment 做后置处理（如注入随机数、JSON 配置等）
+- 各种 `EnvironmentPostProcessor` — 对 Environment 做后置处理（如注入随机数、JSON 配置等）
 
 #### 8.5 ApplicationInfoPropertySource.moveToEnd(environment)
 
-L357
+⟨L357⟩
 
 把 applicationInfo 移到最后（优先级最低），确保用户配置能覆盖它。
 
-DefaultPropertiesPropertySource.moveToEnd(environment) L358 — 同理。
+`DefaultPropertiesPropertySource.moveToEnd(environment)` ⟨L358⟩ — 同理。
 
 #### 8.6 bindToSpringApplication(environment)
 
-L361 / L550-557
+⟨L361 / L550-557⟩
 
-Binder.get(environment).bind("spring.main", Bindable.ofInstance(this.properties))
+`Binder.get(environment).bind("spring.main", Bindable.ofInstance(this.properties))`
 
-把 spring.main.* 前缀的属性绑定到 ApplicationProperties 对象上：
+把 `spring.main.*` 前缀的属性绑定到 `ApplicationProperties` 对象上：
 
-spring.main.lazy-initialization → properties.lazyInitialization
+`spring.main.lazy-initialization` → `properties.lazyInitialization`
 
-spring.main.banner-mode → properties.bannerMode
+`spring.main.banner-mode` → `properties.bannerMode`
 
-spring.main.web-application-type → properties.webApplicationType（可覆盖构造时推断的类型）
+`spring.main.web-application-type` → `properties.webApplicationType`（可覆盖构造时推断的类型）
 
 等等。
 
 #### 8.7 EnvironmentConverter.convertEnvironmentIfNecessary()
 
-L362-365 / EnvironmentConverter.java L73-78
+⟨L362-365 / EnvironmentConverter.java L73-78⟩
 
-如果用户自定义了 Environment（this.isCustomEnvironment == true），跳过转换。
+如果用户自定义了 Environment（`this.isCustomEnvironment == true`），跳过转换。
 
-否则：检查当前 Environment 类型是否与 deduceEnvironmentClass() 推断的类型一致：
+否则：检查当前 Environment 类型是否与 `deduceEnvironmentClass()` 推断的类型一致：
 
 - 一致 → 原样返回
 
-- 不一致 → convertEnvironment()：反射创建目标类型 Environment，复制 profiles、conversionService、propertySources（排除 servlet 相关的 PropertySource）
+- 不一致 → `convertEnvironment()`：反射创建目标类型 Environment，复制 profiles、conversionService、propertySources（排除 servlet 相关的 PropertySource）
 
-最后再次 ConfigurationPropertySources.attach() L366 重新包装。
+最后再次 `ConfigurationPropertySources.attach()` ⟨L366⟩ 重新包装。
 
 ### 阶段 C：Banner 打印 + ApplicationContext 创建（步骤 9-10）
 
-> **【阶段】**
-
-**9.**`printBanner(environment) L317 / L559-570`
+**9.** `printBanner(environment)` ⟨L317 / L559-570⟩
 
 #### printBanner() 流程
 
-- 检查 properties.getBannerMode(environment)：
+- 检查 `properties.getBannerMode(environment)`：
 
 - OFF → 返回 null，不打印
 
-- 如果结构化日志开启 → 自动设为 OFF（ApplicationProperties.getBannerMode() L104-112）
+- 如果结构化日志开启 → 自动设为 OFF（`ApplicationProperties.getBannerMode()` L104-112）
 
 - 默认 → CONSOLE
 
-- 创建 SpringApplicationBannerPrinter(resourceLoader, this.banner)
+- 创建 `SpringApplicationBannerPrinter(resourceLoader, this.banner)`
 
-- getBanner(environment) (L73-82)：
+- `getBanner(environment)` (L73-82)：
 
-- 先找 spring.banner.location（默认 banner.txt）资源文件 → ResourceBanner
+- 先找 `spring.banner.location`（默认 `banner.txt`）资源文件 → `ResourceBanner`
 
-- 没有 → 用自定义 this.banner（如果设了）
+- 没有 → 用自定义 `this.banner`（如果设了）
 
-- 都没有 → SpringBootBanner（默认 ASCII Art Spring Logo）
+- 都没有 → `SpringBootBanner`（默认 ASCII Art Spring Logo）
 
-- CONSOLE 模式 → banner.printBanner(environment, sourceClass, System.out)
+- CONSOLE 模式 → `banner.printBanner(environment, sourceClass, System.out)`
 
-- LOG 模式 → banner.printBanner() 输出到 ByteArrayOutputStream → 转字符串 → logger.info()
+- LOG 模式 → `banner.printBanner()` 输出到 ByteArrayOutputStream → 转字符串 → `logger.info()`
 
-返回 PrintedBanner（装饰器，后续可重复打印无需再传 sourceClass）。
+返回 `PrintedBanner`（装饰器，后续可重复打印无需再传 sourceClass）。
 
-**10.**`createApplicationContext() L318 / L579-584`
+**10.** `createApplicationContext()` ⟨L318 / L579-584⟩
 
 创建 ApplicationContext：
 
-- applicationContextFactory.create(webApplicationType)
+- `applicationContextFactory.create(webApplicationType)`
 
-- DefaultApplicationContextFactory.create() (L55-64)：
+- `DefaultApplicationContextFactory.create()` (L55-64)：
 
-- 先从 spring.factories 加载所有 ApplicationContextFactory 实现，逐个尝试 create(webApplicationType)
+- 先从 spring.factories 加载所有 `ApplicationContextFactory` 实现，逐个尝试 `create(webApplicationType)`
 
-- 都返回 null → createDefaultApplicationContext() (L66-71)：
+- 都返回 null → `createDefaultApplicationContext()` (L66-71)：
 
-- 非 AOT → new AnnotationConfigApplicationContext()（内含 AnnotatedBeanDefinitionReader + ClassPathBeanDefinitionScanner）
+- 非 AOT → `new AnnotationConfigApplicationContext()`（内含 `AnnotatedBeanDefinitionReader` + `ClassPathBeanDefinitionScanner`）
 
-- AOT → new GenericApplicationContext()（更轻量，不自动扫描）
+- AOT → `new GenericApplicationContext()`（更轻量，不自动扫描）
 
 - 断言 context 不为 null
 
-AnnotationConfigApplicationContext 是最常用的实现，它继承了 GenericApplicationContext（提供 BeanFactory）并组合了 AnnotatedBeanDefinitionReader（注册 @Configuration/@Bean）和 ClassPathBeanDefinitionScanner（扫描 @Component）。
+**AnnotationConfigApplicationContext** 是最常用的实现，它继承了 `GenericApplicationContext`（提供 BeanFactory）并组合了 `AnnotatedBeanDefinitionReader`（注册 @Configuration/@Bean）和 `ClassPathBeanDefinitionScanner`（扫描 @Component）。
 
-10.5`context.setApplicationStartup(this.applicationStartup) L319`
+**10.5.** `context.setApplicationStartup(this.applicationStartup)` ⟨L319⟩
 
-设置 ApplicationStartup（启动指标收集器），默认 ApplicationStartup.DEFAULT（无操作）。可用于收集各步骤耗时。
+设置 ApplicationStartup（启动指标收集器），默认 `ApplicationStartup.DEFAULT`（无操作）。可用于收集各步骤耗时。
 
 ### 阶段 D：Context 准备（步骤 11）
 
-> **【阶段】**
-
-**11.**`prepareContext(bootstrapContext, context, environment, listeners, applicationArguments, printedBanner) L320 / L380-419`
+**11.** `prepareContext(bootstrapContext, context, environment, listeners, applicationArguments, printedBanner)` ⟨L320 / L380-419⟩
 
 这是启动流程中最长的方法，分 12 个子步骤：
 
 #### 11.1 context.setEnvironment(environment)
 
-L383
+⟨L383⟩
 
 把准备好的 Environment 设置到 ApplicationContext 上（替换默认的）。
 
 #### 11.2 postProcessApplicationContext(context)
 
-L384 / L591-607
+⟨L384 / L591-607⟩
 
 对 context 做后置处理：
 
-- 如果有 beanNameGenerator → 注册为单例 "org.springframework.context.annotation.ConfigurationClassPostProcessor.importBeanNameGenerator"
+- 如果有 `beanNameGenerator` → 注册为单例 `"org.springframework.context.annotation.ConfigurationClassPostProcessor.importBeanNameGenerator"`
 
-- 如果有 resourceLoader：
+- 如果有 `resourceLoader`：
 
-- context 是 GenericApplicationContext → setResourceLoader()
+- context 是 GenericApplicationContext → `setResourceLoader()`
 
-- context 是 DefaultResourceLoader → setClassLoader()
+- context 是 DefaultResourceLoader → `setClassLoader()`
 
-- 如果 addConversionService → beanFactory.setConversionService(environment.getConversionService())
+- 如果 `addConversionService` → `beanFactory.setConversionService(environment.getConversionService())`
 
 #### 11.3 addAotGeneratedInitializerIfNecessary(this.initializers)
 
-L385 / L421-439
+⟨L385 / L421-439⟩
 
-AOT 模式下（AotDetector.useGeneratedArtifacts()）：
+AOT 模式下（`AotDetector.useGeneratedArtifacts()`）：
 
-- 过滤出 AotApplicationContextInitializer 类型的 initializer
+- 过滤出 `AotApplicationContextInitializer` 类型的 initializer
 
-- 如果没有 → 查找 mainApplicationClass.getName() + "__ApplicationContextInitializer" 类
+- 如果没有 → 查找 `mainApplicationClass.getName() + "__ApplicationContextInitializer"` 类
 
-- 找不到 → 抛 AotInitializerNotFoundException
+- 找不到 → 抛 `AotInitializerNotFoundException`
 
-- 找到 → 用 AotApplicationContextInitializer.forInitializerClasses() 包装
+- 找到 → 用 `AotApplicationContextInitializer.forInitializerClasses()` 包装
 
 - 移除原有 AOT initializer，把新的插到列表最前
 
-Native Image 模式下还会检查 NativeImageRequirementsException.throwIfNotMet()（需要 Java 25+）。
+Native Image 模式下还会检查 `NativeImageRequirementsException.throwIfNotMet()`（需要 Java 25+）。
 
 #### 11.4 配置 BeanFactory
 
-L387-392
+⟨L387-392⟩
 
-- autowireCapableBeanFactory.setAllowCircularReferences(properties.isAllowCircularReferences()) — 默认 false
+- `autowireCapableBeanFactory.setAllowCircularReferences(properties.isAllowCircularReferences())` — 默认 false
 
-- listableBeanFactory.setAllowBeanDefinitionOverriding(properties.isAllowBeanDefinitionOverriding()) — 默认 false
+- `listableBeanFactory.setAllowBeanDefinitionOverriding(properties.isAllowBeanDefinitionOverriding())` — 默认 false
 
 #### 11.5 applyInitializers(context)
 
-L393 / L616-625
+⟨L393 / L616-625⟩
 
-遍历所有 ApplicationContextInitializer（按 @Order 排序），调用 initializer.initialize(context)。
+遍历所有 `ApplicationContextInitializer`（按 @Order 排序），调用 `initializer.initialize(context)`。
 
-每个 initializer 的泛型类型通过 GenericTypeResolver.resolveTypeArgument() 解析，断言 context 是该类型的实例。
+每个 initializer 的泛型类型通过 `GenericTypeResolver.resolveTypeArgument()` 解析，断言 context 是该类型的实例。
 
 典型 initializer 包括：
 
-- DelegatingApplicationContextInitializer — 从环境变量加载额外 initializer
+- `DelegatingApplicationContextInitializer` — 从环境变量加载额外 initializer
 
-- ContextIdApplicationContextInitializer — 设置 contextId
+- `ContextIdApplicationContextInitializer` — 设置 contextId
 
-- ConfigurationWarningsApplicationContextInitializer — 检查有问题的配置
+- `ConfigurationWarningsApplicationContextInitializer` — 检查有问题的配置
 
 - 各种 autoconfigure 模块提供的 initializer
 
 #### 11.6 listeners.contextPrepared(context)
 
-L394
+⟨L394⟩
 
 ⚡ 发布事件：ApplicationContextInitializedEvent
 
 EventPublishingRunListener.contextPrepared() (L87-89)：
 
-multicastInitialEvent(new ApplicationContextInitializedEvent(this.application, this.args, context))
+`multicastInitialEvent(new ApplicationContextInitializedEvent(this.application, this.args, context))`
 
 此时 context 已创建并初始化，但还没加载 BeanDefinition。
 
 #### 11.7 bootstrapContext.close(context)
 
-L395 / DefaultBootstrapContext.java L139-141
+⟨L395 / DefaultBootstrapContext.java L139-141⟩
 
-events.multicastEvent(new BootstrapContextClosedEvent(this, applicationContext))
+`events.multicastEvent(new BootstrapContextClosedEvent(this, applicationContext))`
 
-BootstrapContext 使命完成，发布关闭事件。注册了 addCloseListener 的组件可以在此把 BootstrapContext 中的实例迁移到 ApplicationContext。
+BootstrapContext 使命完成，发布关闭事件。注册了 `addCloseListener` 的组件可以在此把 BootstrapContext 中的实例迁移到 ApplicationContext。
 
 #### 11.8 logStartupInfo / logStartupProfileInfo
 
-L396-399 / L633-661
+⟨L396-399 / L633-661⟩
 
-- logStartupInfo() — 如果是 root context（parent == null），调用 StartupInfoLogger.logStarting()：
+- `logStartupInfo()` — 如果是 root context（parent == null），调用 `StartupInfoLogger.logStarting()`：
 
 - 输出 "Starting MyApplication v1.0 using Java 17 with PID 12345 (/path/to/app started by user in /dir)"
 
 - debug 级别输出 "Running with Spring Boot vX, Spring vX"
 
-- logStartupProfileInfo() — 输出 active profiles 或 default profiles：
+- `logStartupProfileInfo()` — 输出 active profiles 或 default profiles：
 
 - 有 active profiles → "The following 1 profile is active: \"dev\""
 
@@ -445,114 +434,113 @@ L396-399 / L633-661
 
 #### 11.9 注册单例 Bean
 
-L401-404
+⟨L401-404⟩
 
-- beanFactory.registerSingleton("springApplicationArguments", applicationArguments)
+- `beanFactory.registerSingleton("springApplicationArguments", applicationArguments)`
 
-- beanFactory.registerSingleton("springBootBanner", printedBanner)（如果 banner 不为 null）
+- `beanFactory.registerSingleton("springBootBanner", printedBanner)`（如果 banner 不为 null）
 
 这些单例不经过 BeanDefinition，直接注册到 BeanFactory 的 singletonObjects。
 
 #### 11.10 懒加载 / KeepAlive / 属性排序
 
-L405-411
+⟨L405-411⟩
 
-- properties.isLazyInitialization() → context.addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor()) — 所有 Bean 默认懒加载
+- `properties.isLazyInitialization()` → `context.addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor())` — 所有 Bean 默认懒加载
 
-- properties.isKeepAlive() → context.addApplicationListener(new KeepAlive()) — ContextRefreshedEvent 时启动非守护线程保持 JVM 存活，ContextClosedEvent 时停止
+- `properties.isKeepAlive()` → `context.addApplicationListener(new KeepAlive())` — ContextRefreshedEvent 时启动非守护线程保持 JVM 存活，ContextClosedEvent 时停止
 
-- context.addBeanFactoryPostProcessor(new PropertySourceOrderingBeanFactoryPostProcessor(context)) — 保证 defaultProperties 排在 PropertySources 最后（HIGHEST_PRECEDENCE）
+- `context.addBeanFactoryPostProcessor(new PropertySourceOrderingBeanFactoryPostProcessor(context))` — 保证 defaultProperties 排在 PropertySources 最后（HIGHEST_PRECEDENCE）
 
 #### 11.11 加载 Sources
 
-L412-417
+⟨L412-417⟩
 
 非 AOT 模式下：
 
-- getAllSources() (L1189-1198) — 合并 primarySources（构造时传入的类）和 properties.getSources()（通过 spring.main.sources 设置的额外源）
+- `getAllSources()` (L1189-1198) — 合并 `primarySources`（构造时传入的类）和 `properties.getSources()`（通过 spring.main.sources 设置的额外源）
 
-- load(context, sources) (L683-698)：
+- `load(context, sources)` (L683-698)：
 
-- 创建 BeanDefinitionLoader(registry, sources)
+- 创建 `BeanDefinitionLoader(registry, sources)`
 
 - 设置 beanNameGenerator、resourceLoader、environment
 
-- loader.load() (BeanDefinitionLoader.java L128-132)：遍历所有 source，按类型分发：
+- `loader.load()` (BeanDefinitionLoader.java L128-132)：遍历所有 source，按类型分发：
 
-- **Class** → annotatedReader.register(source) — 注册为 BeanDefinition（@Configuration 类）
+- **Class** → `annotatedReader.register(source)` — 注册为 BeanDefinition（@Configuration 类）
 
-- **Resource** → xmlReader.loadBeanDefinitions(resource) — 加载 XML 配置
+- **Resource** → `xmlReader.loadBeanDefinitions(resource)` — 加载 XML 配置
 
-- **Package** → scanner.scan(packageName) — 包扫描 @Component/@Service 等
+- **Package** → `scanner.scan(packageName)` — 包扫描 @Component/@Service 等
 
 - **CharSequence** → 先尝试当类名加载，失败再当资源路径，再失败当包名
 
 BeanDefinitionLoader 内部维护三个 reader：
 
-- AnnotatedBeanDefinitionReader — 处理 @Configuration/@Bean 注解
+- `AnnotatedBeanDefinitionReader` — 处理 @Configuration/@Bean 注解
 
-- XmlBeanDefinitionReader — 处理 XML
+- `XmlBeanDefinitionReader` — 处理 XML
 
-- GroovyBeanDefinitionReader（如果 Groovy 在 classpath）
+- `GroovyBeanDefinitionReader`（如果 Groovy 在 classpath）
 
-- ClassPathBeanDefinitionScanner — 处理包扫描
+- `ClassPathBeanDefinitionScanner` — 处理包扫描
 
-还有一个 ClassExcludeFilter — 确保指定的 Class source 不会在包扫描时被重复注册。
+还有一个 `ClassExcludeFilter` — 确保指定的 Class source 不会在包扫描时被重复注册。
 
 #### 11.12 listeners.contextLoaded(context)
 
-L418
+⟨L418⟩
 
 ⚡ 发布事件：ApplicationPreparedEvent
 
 EventPublishingRunListener.contextLoaded() (L92-100)：
 
-- 遍历 application.getListeners()：
+- 遍历 `application.getListeners()`：
 
-- 如果是 ApplicationContextAware → setApplicationContext(context)
+- 如果是 `ApplicationContextAware` → `setApplicationContext(context)`
 
-- context.addApplicationListener(listener) — 把 listener 注册到 context
+- `context.addApplicationListener(listener)` — 把 listener 注册到 context
 
-- multicastInitialEvent(new ApplicationPreparedEvent(...))
+- `multicastInitialEvent(new ApplicationPreparedEvent(...))`
 
 此后所有事件都通过 ApplicationContext 的 ApplicationEventMulticaster 广播，不再用 initialMulticaster。
 
 ### 阶段 E：刷新 Context（步骤 12-14）
 
-> **【阶段】**
-
-**12.**`refreshContext(context) L321 / L441-446`
+**12.** `refreshContext(context)` ⟨L321 / L441-446⟩
 
 #### 12.1 注册 ShutdownHook
 
-L442-444
+⟨L442-444⟩
 
-shutdownHook.registerApplicationContext(context) (SpringApplicationShutdownHook.java L78-85)：
+`shutdownHook.registerApplicationContext(context)` (SpringApplicationShutdownHook.java L78-85)：
 
-- addRuntimeShutdownHookIfNecessary() (L87-91)：
+- `addRuntimeShutdownHookIfNecessary()` (L87-91)：
 
-- 如果 shutdownHookAdditionEnabled 且 shutdownHookAdded CAS(false→true) 成功
+- 如果 `shutdownHookAdditionEnabled` 且 `shutdownHookAdded` CAS(false→true) 成功
 
-- Runtime.getRuntime().addShutdownHook(new Thread(this, "SpringApplicationShutdownHook"))
+- `Runtime.getRuntime().addShutdownHook(new Thread(this, "SpringApplicationShutdownHook"))`
 
-- 给 context 加 ApplicationContextClosedListener（监听 ContextClosedEvent，把 context 从 contexts 移到 closedContexts）
+- 给 context 加 `ApplicationContextClosedListener`（监听 ContextClosedEvent，把 context 从 contexts 移到 closedContexts）
 
-- 把 context 加入 contexts 集合
+- 把 context 加入 `contexts` 集合
 
-ShutdownHook 的 run() (L105-119) 在 JVM 关闭时执行：
+ShutdownHook 的 `run()` (L105-119) 在 JVM 关闭时执行：
 
-- 关闭所有注册的 context（closeAndWait()，最多等 10 分钟）
+- 关闭所有注册的 context（`closeAndWait()`，最多等 10 分钟）
 
 - 关闭所有 closedContexts
 
-- 逆序执行所有注册的 Handler（SpringApplicationShutdownHandlers.add() 添加的）
+- 逆序执行所有注册的 Handler（`SpringApplicationShutdownHandlers.add()` 添加的）
 
 #### 12.2 context.refresh()
 
-L445 → L756
+⟨L445 → L756⟩
 
-applicationContext.refresh() — 进入 Spring Framework 的 AbstractApplicationContext.refresh()，这是整个 Spring 的核心方法：
+`applicationContext.refresh()` — 进入 Spring Framework 的 `AbstractApplicationContext.refresh()`，这是整个 Spring 的核心方法：
 
+```
 // AbstractApplicationContext.refresh() 内部流程（Spring Framework 源码，非 Spring Boot）
 
 prepareRefresh() — 初始化前准备
@@ -706,32 +694,31 @@ finishRefresh() — 刷新完成
   registerApplicationContextAsSingleton() — 把 context 注册到 BeanFactory
   publishEvent(new ContextRefreshedEvent(this)) ⚡
   注册 LiveBeansView（如果启用）
+```
 
-**13.**`afterRefresh(context, applicationArguments) L322 / L764-765`
+**13.** `afterRefresh(context, applicationArguments)` ⟨L322 / L764-765⟩
 
 空实现，模板方法，子类可覆盖做额外处理。
 
-**14.**`startup.started() L323 / L1754-1758`
+**14.** `startup.started()` ⟨L323 / L1754-1758⟩
 
-Duration.ofMillis(System.currentTimeMillis() - startTime)
+`Duration.ofMillis(System.currentTimeMillis() - startTime)`
 
 计算从启动到 context 刷新完成的总耗时。
 
 ### 阶段 F：启动后处理（步骤 15-20）
 
-> **【阶段】**
+**15.** `logStarted()` ⟨L324-326 / StartupInfoLogger.java L58-98⟩
 
-**15.**`logStarted() L324-326 / StartupInfoLogger.java L58-98`
+如果 `properties.isLogStartupInfo()`（默认 true）：
 
-如果 properties.isLogStartupInfo()（默认 true）：
+`new StartupInfoLogger(mainApplicationClass, environment).logStarted(getApplicationLog(), startup)`
 
-new StartupInfoLogger(mainApplicationClass, environment).logStarted(getApplicationLog(), startup)
+输出：`"Started MyApplication in 2.345 seconds (process running for 3.456)"`
 
-输出："Started MyApplication in 2.345 seconds (process running for 3.456)"
+`startup.action()` 返回 "Started"（StandardStartup）或 "Restored"（CRaC 恢复）。
 
-startup.action() 返回 "Started"（StandardStartup）或 "Restored"（CRaC 恢复）。
-
-**16.**`listeners.started(context, timeTakenToStarted) L327`
+**16.** `listeners.started(context, timeTakenToStarted)` ⟨L327⟩
 
 ⚡ 发布事件：ApplicationStartedEvent
 
@@ -739,35 +726,36 @@ startup.action() 返回 "Started"（StandardStartup）或 "Restored"（CRaC 恢�
 
 EventPublishingRunListener.started() (L103-106)：
 
-- context.publishEvent(new ApplicationStartedEvent(...)) — 此时用 context 的 multicaster
+- `context.publishEvent(new ApplicationStartedEvent(...))` — 此时用 context 的 multicaster
 
-- AvailabilityChangeEvent.publish(context, LivenessState.CORRECT) — 标记应用存活状态为 CORRECT
+- `AvailabilityChangeEvent.publish(context, LivenessState.CORRECT)` — 标记应用存活状态为 CORRECT
 
-**17.**`callRunners(context, applicationArguments) L328 / L767-777`
+**17.** `callRunners(context, applicationArguments)` ⟨L328 / L767-777⟩
 
 查找并调用所有 Runner Bean：
 
-- beanFactory.getBeanNamesForType(Runner.class) — 查找所有 Runner 类型 Bean
+- `beanFactory.getBeanNamesForType(Runner.class)` — 查找所有 Runner 类型 Bean
 
-- 遍历获取实例，放入 IdentityHashMap<Runner, String>
+- 遍历获取实例，放入 `IdentityHashMap<Runner, String>`
 
-- 获取排序器：getOrderComparator(beanFactory) (L779-784)：
+- 获取排序器：`getOrderComparator(beanFactory)` (L779-784)：
 
-- 如果 beanFactory 是 DefaultListableBeanFactory → 用其 dependencyComparator（如果它是 OrderComparator）
+- 如果 beanFactory 是 DefaultListableBeanFactory → 用其 `dependencyComparator`（如果它是 OrderComparator）
 
-- 否则 → AnnotationAwareOrderComparator.INSTANCE
+- 否则 → `AnnotationAwareOrderComparator.INSTANCE`
 
-- 包装 FactoryAwareOrderSourceProvider — 从 BeanDefinition 获取工厂方法和目标类型作为排序源
+- 包装 `FactoryAwareOrderSourceProvider` — 从 BeanDefinition 获取工厂方法和目标类型作为排序源
 
-- 排序后遍历调用 callRunner(runner, args) (L786-794)：
+- 排序后遍历调用 `callRunner(runner, args)` (L786-794)：
 
-- 如果是 ApplicationRunner → applicationRunner.run(args)（args 是 ApplicationArguments）
+- 如果是 `ApplicationRunner` → `applicationRunner.run(args)`（args 是 ApplicationArguments）
 
-- 如果是 CommandLineRunner → commandLineRunner.run(args.getSourceArgs())（args 是 String[]）
+- 如果是 `CommandLineRunner` → `commandLineRunner.run(args.getSourceArgs())`（args 是 String[]）
 
+> **★ 要点**
 Runner 的执行顺序由 @Order 或 Ordered 接口决定。ApplicationRunner 和 CommandLineRunner 混在一起排序，不区分类型优先级。如果同一个类同时实现了两个接口，两个 run 方法都会被调用。
 
-**18.**`context.isRunning() + `listeners.ready(context, startup.ready()) L333-336
+**18.** `context.isRunning()` + `listeners.ready(context, startup.ready())` ⟨L333-336⟩
 
 检查 context 是否在运行，如果是：
 ⚡ 发布事件：ApplicationReadyEvent
@@ -776,49 +764,47 @@ Runner 的执行顺序由 @Order 或 Ordered 接口决定。ApplicationRunner �
 
 EventPublishingRunListener.ready() (L109-112)：
 
-- context.publishEvent(new ApplicationReadyEvent(...))
+- `context.publishEvent(new ApplicationReadyEvent(...))`
 
-- AvailabilityChangeEvent.publish(context, ReadinessState.ACCEPTING_TRAFFIC) — 标记应用就绪，可以接收流量
+- `AvailabilityChangeEvent.publish(context, ReadinessState.ACCEPTING_TRAFFIC)` — 标记应用就绪，可以接收流量
 
-startup.ready() 计算从启动到 ready 的总耗时。
+`startup.ready()` 计算从启动到 ready 的总耗时。
 
-**19.**`return context L341`
+**19.** `return context` ⟨L341⟩
 
-返回运行中的 ConfigurableApplicationContext。
+返回运行中的 `ConfigurableApplicationContext`。
 
-**20.**`handleRunFailure(context, ex, listeners) L330-331 / L803-828`
+**20.** `handleRunFailure(context, ex, listeners)` ⟨L330-331 / L803-828⟩
 
 **异常处理（catch 块）**：
 
-- 如果是 AbandonedRunException → 直接返回，不处理
+- 如果是 `AbandonedRunException` → 直接返回，不处理
 
-- handleExitCode() (L881-892)：
+- `handleExitCode()` (L881-892)：
 
-- 从异常中提取 ExitCode（通过 ExitCodeExceptionMapper Bean 或 ExitCodeGenerator 接口）
+- 从异常中提取 ExitCode（通过 `ExitCodeExceptionMapper` Bean 或 `ExitCodeGenerator` 接口）
 
-- 发布 ExitCodeEvent
+- 发布 `ExitCodeEvent`
 
-- 注册 exitCode 到 SpringBootExceptionHandler
+- 注册 exitCode 到 `SpringBootExceptionHandler`
 
-- listeners.failed(context, exception) — 触发 RunListener 的 failed
+- `listeners.failed(context, exception)` — 触发 RunListener 的 failed
 
   ⚡ 发布事件：ApplicationFailedEvent
 
   EventPublishingRunListener.failed() (L115-133)：
 
-- 如果 context 活跃 → context.publishEvent(event)
+- 如果 context 活跃 → `context.publishEvent(event)`
 
 - 如果 context 不活跃 → 把 context 的 listeners 加到 initialMulticaster，用 initialMulticaster 广播
 
-- reportFailure() (L842-867) — 加载 SpringBootExceptionReporter（从 spring.factories），报告异常
+- `reportFailure()` (L842-867) — 加载 `SpringBootExceptionReporter`（从 spring.factories），报告异常
 
-- context.close() — 关闭 Context
+- `context.close()` — 关闭 Context
 
-- shutdownHook.deregisterFailedApplicationContext(context) — 从 ShutdownHook 注销失败的 context
+- `shutdownHook.deregisterFailedApplicationContext(context)` — 从 ShutdownHook 注销失败的 context
 
 ## 专题一：循环依赖注入（三级缓存机制）
-
-> **【阶段】**
 
 源码位置：DefaultSingletonBeanRegistry.java + AbstractAutowireCapableBeanFactory.java（Spring Framework 6.2.18）
 
@@ -837,6 +823,7 @@ private final Map earlySingletonObjects = new ConcurrentHashMap<>(16);
 private final Map> singletonFactories = new ConcurrentHashMap<>(16);
 ```
 
+> **★ 要点**
 三级缓存存在的意义：
 
 1. **singletonObjects** — 存放完全初始化好的 Bean，所有 getBean 请求最终都从这里取
@@ -957,6 +944,7 @@ private final Map> singletonFactories = new ConcurrentHashMap<>(16);
           // registeredSingletons.add("A")
 ```
 
+> **★ 要点**
 **为什么用三级缓存而不是二级缓存？**
 
 如果只有二级缓存（singletonObjects + earlySingletonObjects），那么在 doCreateBean 时就必须立即调用 getEarlyBeanReference()，把半成品代理放入二级缓存。但问题是：**不是所有 Bean 都会发生循环依赖**，提前为每个 Bean 创建代理是浪费的。
@@ -990,15 +978,13 @@ T15     addSingleton("A")             {B: 完整, A: 完整}  {}                
 
 - **必须 isSingleton** — 原型（prototype）Bean 不缓存，无法解决循环依赖，直接抛 BeanCurrentlyInCreationException
 
-- **必须 allowCircularReferences=true** — Spring Boot 默认 false（AbstractAutowireCapableBeanFactory L593），需显式开启 spring.main.allow-circular-references=true
+- **必须 allowCircularReferences=true** — Spring Boot 默认 false（AbstractAutowireCapableBeanFactory L593），需显式开启 `spring.main.allow-circular-references=true`
 
 - **构造器注入无法解决** — 循环依赖发生在 createBeanInstance 阶段（构造器需要参数），此时还没到 addSingletonFactory，三级缓存中没有 Bean，直接报错
 
 - **只能解决单例 setter/字段注入** — @Autowired 字段注入和 setter 注入发生在 populateBean 阶段，此时三级缓存已就绪
 
 ## 专题二：动态代理（AOP 代理创建机制）
-
-> **【阶段】**
 
 源码位置：AbstractAutoProxyCreator.java + DefaultAopProxyFactory.java + JdkDynamicAopProxy.java + CglibAopProxy.java + ConfigurationClassPostProcessor.java（Spring Framework 6.2.18）
 
@@ -1024,6 +1010,7 @@ public AopProxy createAopProxy(AdvisedSupport config) {
 }
 ```
 
+> **★ 要点**
 **代理选择规则：**
 
 1. 目标类实现了接口 + 未设置 proxyTargetClass → **JDK 动态代理**（基于接口）
@@ -1120,6 +1107,7 @@ public Object postProcessAfterInitialization(@Nullable Object bean, String beanN
 }
 ```
 
+> **★ 要点**
 **避免重复代理的关键：** earlyBeanReferences Map 记录了哪些 Bean 在循环依赖时被提前代理过。postProcessAfterInitialization 时检查：如果 earlyBeanReferences 里有记录且是同一个原始 bean → 说明已经代理过，直接返回原始 bean（代理对象已经在二级缓存中）。如果没有记录 → 正常创建代理。
 
 ### createProxy → buildProxy 完整流程
@@ -1274,16 +1262,14 @@ private Object buildProxy(@Nullable ClassLoader classLoader, boolean classOnly) 
 
 ## 专题三：Spring Boot 启动 Tomcat 全流程
 
-> **【阶段】**
-
 源码位置：ServletWebServerApplicationContext.java + TomcatServletWebServerFactory.java + TomcatWebServerFactory.java + TomcatWebServer.java + WebServerStartStopLifecycle.java + WebApplicationContextInitializer.java
 
 ### 触发入口
 
-Tomcat 的启动发生在 context.refresh() 的 onRefresh() 阶段（见完整调用链树形图中的 onRefresh() ★ 创建嵌入式 Web 服务器）。
-ServletWebServerApplicationContext 重写了 onRefresh()，在这里创建并初始化嵌入式 Tomcat。
-但此时 Tomcat 只是"初始化"（tomcat.start()），Connector 被临时移除，端口还没绑定。
-真正的"启动"（绑定端口、接收请求）发生在 finishRefresh() 阶段，通过 WebServerStartStopLifecycle 的 start() 触发。
+Tomcat 的启动发生在 `context.refresh()` 的 `onRefresh()` 阶段（见完整调用链树形图中的 `onRefresh() ★ 创建嵌入式 Web 服务器`）。
+`ServletWebServerApplicationContext` 重写了 `onRefresh()`，在这里创建并初始化嵌入式 Tomcat。
+但此时 Tomcat 只是"初始化"（`tomcat.start()`），Connector 被临时移除，端口还没绑定。
+真正的"启动"（绑定端口、接收请求）发生在 `finishRefresh()` 阶段，通过 `WebServerStartStopLifecycle` 的 `start()` 触发。
 
 ### 完整调用链
 
@@ -1632,9 +1618,10 @@ onRefresh()
 | 初始化 | onRefresh() | TomcatWebServer.initialize() | 创建 Tomcat 实例、配置 Connector/Engine/Host/Context、tomcat.start()（移除 Connector）、注册 Servlet/Filter、启动非守护线程 | 未绑定 |
 | 启动 | finishRefresh() → SmartLifecycle.start() | WebServerStartStopLifecycle.start() → TomcatWebServer.start() | 加回 Connector、绑定端口、初始化 Servlet（loadOnStartup）、检查启动状态 | 已绑定，可接收请求 |
 
+> **★ 要点**
 **为什么要两阶段？**
 
-因为 onRefresh() 在 finishBeanFactoryInstantiation() 之前执行，此时 Bean 还没全部创建完。如果在 onRefresh 就绑定端口，外部请求可能进来但 Controller 还没初始化。所以先 tomcat.start() 初始化内部组件（Context/Servlet/Filter），移除 Connector 不绑定端口；等所有 Bean 都创建完后，在 finishRefresh() 阶段通过 SmartLifecycle 回调加回 Connector 绑定端口，此时所有 Bean 都就绪了。
+因为 `onRefresh()` 在 `finishBeanFactoryInstantiation()` 之前执行，此时 Bean 还没全部创建完。如果在 onRefresh 就绑定端口，外部请求可能进来但 Controller 还没初始化。所以先 `tomcat.start()` 初始化内部组件（Context/Servlet/Filter），移除 Connector 不绑定端口；等所有 Bean 都创建完后，在 `finishRefresh()` 阶段通过 SmartLifecycle 回调加回 Connector 绑定端口，此时所有 Bean 都就绪了。
 
 ### Tomcat 内部组件层级
 
@@ -1660,8 +1647,6 @@ Server（StandardServer）                    // 顶层
 ```
 
 ## 专题四：MySQL 事务控制 + Spring 事务控制 + 二者关联
-
-> **【阶段】**
 
 MySQL 部分基于 InnoDB 存储引擎原理 + 官方文档；Spring 部分源码位置：Transactional.java + TransactionInterceptor.java + TransactionAspectSupport.java + AbstractPlatformTransactionManager.java + DataSourceTransactionManager.java + TransactionSynchronizationManager.java（Spring Framework 6.2.18）
 
@@ -2119,6 +2104,7 @@ TransactionInterceptor.invoke(MethodInvocation invocation)
 
 #### B4. Spring 事务的核心机制
 
+> **★ 要点**
 **1. ThreadLocal 绑定 Connection**
 
 TransactionSynchronizationManager 用 ThreadLocal<Map<Object, Object>> 把 DataSource → ConnectionHolder 绑定到线程。同一线程内，JdbcTemplate/MyBatis 通过 DataSourceUtils.getConnection(dataSource) 从 ThreadLocal 取同一个 Connection，保证同一事务。
@@ -2229,6 +2215,7 @@ NESTED：不 suspend，在当前 Connection 上创建 Savepoint
 
 #### C3. 关键关联点总结
 
+> **★ 要点**
 **1. Spring 事务本质 = JDBC Connection 控制**
 
 Spring 不直接操作 MySQL 事务，而是通过 JDBC API（Connection.setAutoCommit/setTransactionIsolation/commit/rollback）间接控制 MySQL。DataSourceTransactionManager.doBegin/doCommit/doRollback 就是对 Connection 的封装。
@@ -2259,8 +2246,7 @@ Spring 事务期间，Connection 从连接池借出并绑定到 ThreadLocal，�
 
 ## 完整调用链树形图
 
-> **【阶段】**
-
+```
 SpringApplication.run(MyApplication.class, args) [SpringApplication:1353]
 │
 ├── new SpringApplication(primarySources) [SpringApplication:274] // 构造阶段 L274-284
@@ -2320,7 +2306,7 @@ SpringApplication.run(MyApplication.class, args) [SpringApplication:1353]
     │   │   └── 找到 EventPublishingRunListener（spring.factories 中注册） [EventPublishingRunListener:55]
     │   │       └── new EventPublishingRunListener(this, args) [EventPublishingRunListener:63]
     │   │           └── new SimpleApplicationEventMulticaster() → initialMulticaster [EventPublishingRunListener:66]
-    │   ├── 检查 ThreadLocal<SpringApplicationHook>
+    │   ├── 检查 ThreadLocal
     │   │   └── 有 hook → hook.getRunListener(this) → 追加到 listeners [SpringApplication:459]
     │   └── new SpringApplicationRunListeners(logger, listeners, applicationStartup) [SpringApplication:464]
     │
@@ -2886,7 +2872,7 @@ SpringApplication.run(MyApplication.class, args) [SpringApplication:1353]
     │   └── EventPublishingRunListener.ready() [EventPublishingRunListener:109] // L109-112
     │       ├── context.publishEvent(new ApplicationReadyEvent(application, args, context, timeTaken)) [EventPublishingRunListener:110] ⚡
     │       │   └── applicationEventMulticaster.multicastEvent(event) [SimpleApplicationEventMulticaster]
-    │       │       └── → 触发所有 ApplicationListener<ApplicationReadyEvent>
+    │       │       └── → 触发所有 ApplicationListener
     │       └── AvailabilityChangeEvent.publish(context, ReadinessState.ACCEPTING_TRAFFIC) [EventPublishingRunListener:111] ⚡
     │           └── → 标记应用就绪，可以接收流量（K8s readiness probe 用） [EventPublishingRunListener:111]
     │
@@ -2926,10 +2912,9 @@ SpringApplication.run(MyApplication.class, args) [SpringApplication:1353]
         │       └── → closeBeanFactory() → 关闭 BeanFactory [AbstractApplicationContext]
         └── shutdownHook.deregisterFailedApplicationContext(context) [SpringApplication:819]
             └── → contexts.remove(applicationContext) → 从 ShutdownHook 注销 [SpringApplicationShutdownHook:97]
+```
 
 ## 事件发布时间线
-
-> **【阶段】**
 
 | 序号 | 事件 | 触发时机 | 广播器 |
 |---|---|---|---|
@@ -2946,8 +2931,6 @@ SpringApplication.run(MyApplication.class, args) [SpringApplication:1353]
 | - | ApplicationFailedEvent | 启动失败时（异常处理） | context multicaster 或 initialMulticaster |
 
 ## 分析的源码文件清单
-
-> **【阶段】**
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
